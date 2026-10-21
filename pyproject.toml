@@ -7,17 +7,21 @@ name = "dls-ibek-yaml-editor"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
 description = "A gui tool for creating and editing ibek ioc.yaml files"
-dependencies = [] # Add project dependencies here, e.g. ["click", "numpy"]
+dependencies = [
+    "ibek>=4.8.2",
+    # 6.10+ wheels need glibc 2.34; 6.9 is the last for RHEL 8 (glibc 2.28)
+    "pyside6-essentials>=6.9,<6.10",
+    "ruamel-yaml>=0.19.1",
+    "typer>=0.27.3",
+]
 dynamic = ["version"]
 license.file = "LICENSE"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 
 [dependency-groups]
 dev = [
@@ -46,6 +50,13 @@ version_file = "src/dls_ibek_yaml_editor/_version.py"
 [tool.pyright]
 typeCheckingMode = "strict"
 reportMissingImports = false # Ignore missing stubs in imported modules
+# ruamel.yaml and ibek are untyped, so their values are Unknown throughout
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+reportUnknownLambdaType = false
 
 [tool.pytest.ini_options]
 # Run pytest with all our checkers, and don't spam us with massive tracebacks on error
@@ -136,3 +147,5 @@ lint.select = [
 # See https://github.com/DiamondLightSource/python-copier-template/issues/154
 # Remove this line to forbid private member access in tests
 "tests/**/*" = ["SLF001"]
+# Qt overrides and signals must use its camelCase names
+"src/dls_ibek_yaml_editor/gui/**/*" = ["N802", "N815"]

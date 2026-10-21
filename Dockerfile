@@ -3,8 +3,13 @@
 FROM ghcr.io/diamondlightsource/ubuntu-devcontainer:resolute AS developer
 
 # Add any system dependencies for the developer/build environment here
+# libgl1 ... libdbus-1-3 let Qt run (offscreen for tests), the xcb libraries
+# let it open windows on an X display
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
     graphviz \
+    libgl1 libegl1 libfontconfig1 libxkbcommon0 libdbus-1-3 \
+    libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 \
+    libxcb-image0 libxcb-render-util0 libxcb-shape0 libxcb-xkb1 libxcb-randr0 \
     && apt-get dist-clean
 
 # The build stage installs the context into the venv
