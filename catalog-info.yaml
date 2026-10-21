@@ -1,0 +1,10 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: dls-ibek-yaml-editor
+  title: dls-ibek-yaml-editor
+  description: A gui tool for creating and editing ibek ioc.yaml files
+spec:
+  type: application
+  lifecycle: production
+  owner: 
