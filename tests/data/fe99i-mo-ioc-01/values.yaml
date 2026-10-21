@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=../../.helm-shared/values.schema.json
+ioc-instance:
+  image: gitlab.diamond.ac.uk:5050/controls/containers/iocs/ioc-dlsmotorplc/ioc-dlsmotorplc-linux-runtime:2026.10.1
+
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: nodetype
+                operator: In
+                values:
+                  - accelerator-ioc
+
+  tolerations:
+    - key: nodetype
+      operator: Equal
+      value: accelerator-ioc
+      effect: NoSchedule

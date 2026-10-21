@@ -1,0 +1,553 @@
+# yaml-language-server: $schema=https://github.com/epics-containers/ibek/releases/download/3.0.1/ibek.support.schema.json
+
+module: motorPLC
+
+shared:
+  # Parameters common to NX102_MotorAxis and NX102_MotorAxisPot
+  - axis: &axis
+      name:
+        type: str
+        description: |-
+          Name for entry
+        default: ""
+      DESC:
+        type: str
+        description: |-
+          Description
+      controller:
+        type: object
+        description: |-
+          The NX102_MotorController this axis belongs to
+      P:
+        type: str
+        description: |-
+          PV names Prefix (for motor record)
+      M:
+        type: str
+        description: |-
+          PV names M component (for motor record)
+      ADDR:
+        type: int
+        description: |-
+          Address for this axis (1-8)
+      current:
+        type: int
+        description: |-
+          Current in mA
+        default: 1000
+      kill_time:
+        type: int
+        description: |-
+          Kill time in ms
+        default: 5
+      plc_dir:
+        type: enum
+        description: |-
+          PLC Direction
+        default: Normal
+        values:
+          Normal: 0
+          Reverse: 1
+      VELO:
+        type: str
+        description: |-
+          Velocity
+        default: "0.5"
+      TWV:
+        type: str
+        description: |-
+          Tweak value
+        default: "0.1"
+      PREC:
+        type: int
+        description: |-
+          Precision
+        default: 5
+      DHLM:
+        type: str
+        description: |-
+          Dial High Limit
+        default: "0"
+      DLLM:
+        type: str
+        description: |-
+          Dial Low Limit
+        default: "0"
+      EGU:
+        type: str
+        description: |-
+          Engineering units
+        default: mm
+      OFF:
+        type: str
+        description: |-
+          Motor Record OFF field
+        default: "0.0"
+      home_method:
+        type: enum
+        description: |-
+          Homing method
+        default: Negative Limit Falling Edge
+        values:
+          Negative Limit Falling Edge: 1
+          Positive Limit Falling Edge: 2
+          Index From Positive Limit: 3
+          Index From Negative Limit: 4
+      home_velo:
+        type: str
+        description: |-
+          Homing velocity in mm/s
+        default: "0.5"
+      home_acc:
+        type: int
+        description: |-
+          Homing acceleration time in ms
+        default: 500
+      fe_lim:
+        type: str
+        description: |-
+          Following error limit (egus)
+        default: "0.1"
+      kill_on_ffe:
+        type: int
+        description: |-
+          Kill axis on fatal following error (0 or 1)
+        default: 1
+      DIR:
+        type: int
+        description: |-
+          Motor record direction
+        default: 0
+      has_encoder:
+        type: int
+        description: |-
+          Report an encoder to the motor record, so UEIP=Yes is accepted at
+          runtime (0 or 1)
+        default: 1
+
+  # NX102_motorPLCAxis.template args common to NX102_MotorAxis and NX102_MotorAxisPot
+  - axis_db_args: &axis_db_args
+      name:
+      controller: "{{controller.name}}"
+      P:
+      M:
+      CP: "{{controller.P}}"
+      CM: "{{controller.M}}"
+      ADDR:
+      VELO:
+      TWV:
+      PREC:
+      DHLM:
+      DLLM:
+      EGU:
+      DESC:
+      OFF:
+      DIR:
+      fe_lim:
+      kill_on_ffe:
+
+  # read/writeVariable.template args, i.e. builder.py's AdditionalSettings.xml
+  - var_args: &var_args
+      P:
+      M:
+      ADDR:
+      eip_port: "{{controller.port}}"
+      crate_no: "{{controller.controller_address}}"
+
+  - eng_args: &eng_args
+      <<: *var_args
+      name: "{{name}}.ENG"
+      current:
+      EGU:
+      home_method:
+      home_velo:
+      plc_dir:
+
+  - spare_var_args: &spare_var_args
+      P: "{{controller.P}}"
+      M: ":A{{ADDR}}"
+      ADDR:
+      eip_port: "{{controller.port}}"
+      crate_no: "{{controller.controller_address}}"
+
+entity_models:
+  - name: NX102_MotorController
+    description: |-
+      motorPLC controller for an Omron NX102 PLC driving up to 8 axes.
+      Commands go to the PLC through drvEtherIP, so a companion
+      ether_ip.EtherIPInit with the same port must be created before this.
+      Every axis address 1-8 needs an NX102_MotorAxis, NX102_MotorAxisPot or
+      NX102_MotorAxisSpare entity (builder.py created the spares automatically).
+    parameters:
+      name:
+        type: id
+        description: |-
+          Identifier for this motor controller (the asyn motor port name)
+      port:
+        type: str
+        description: |-
+          EtherIP port name - the port of a companion ether_ip.EtherIPInit
+      P:
+        type: str
+        description: |-
+          PV names Prefix
+      M:
+        type: str
+        description: |-
+          PV suffix
+        default: ""
+      controller_address:
+        type: int
+        description: |-
+          Controller (crate) number - usually 1
+        default: 1
+      moving_poll:
+        type: int
+        description: |-
+          How frequently to poll the device when an axis is moving (ms)
+        default: 100
+      standing_poll:
+        type: int
+        description: |-
+          How frequently to poll the device when all axes are stationary (ms)
+        default: 100
+
+    pre_init:
+      - value: |
+          plcCreateMotorController("{{name}}", 8, {{moving_poll}}, {{standing_poll}}, "{{port}}", {{controller_address}})
+
+    databases:
+      - file: NX102_motorPLCController.template
+        args:
+          P:
+          M:
+          axes: "8"
+
+  - name: NX102_MotorAxis
+    description: |-
+      One axis of an NX102_MotorController
+    parameters:
+      <<: *axis
+      ERES:
+        type: str
+        description: |-
+          Encoder step size (EGU)
+        default: "-0.0005"
+      MRES:
+        type: str
+        description: |-
+          Motor step size (EGU)
+        default: "0.000078125"
+      RRES:
+        type: str
+        description: |-
+          Readback Step Size (EGU)
+        default: ""
+      URIP:
+        type: str
+        description: |-
+          Use RDBL if present
+        default: ""
+      UEIP:
+        type: str
+        description: |-
+          Use encoder if present
+        default: "1"
+      RDBL:
+        type: str
+        description: |-
+          Readback location, set URIP = 1 if you specify this
+        default: ""
+      RTRY:
+        type: int
+        description: |-
+          Max retry count
+        default: 3
+      RDBD:
+        type: str
+        description: |-
+          Retry Deadband (EGU). Empty means 2 * |ERES|
+        default: ""
+
+    pre_init:
+      - value: |
+          plcCreateMotorAxis({{controller.name}}, {{ADDR}}, {{has_encoder}})
+
+    databases:
+      - file: NX102_motorPLCAxis.template
+        args:
+          <<: *axis_db_args
+          ERES:
+          MRES:
+          RRES:
+          URIP:
+          UEIP:
+          RDBL:
+          RTRY:
+          RDBD: "{{ RDBD or (2 * (ERES | float)) | abs }}"
+          FE_ACT: "{{P}}{{M}}.REP"
+          FE_ACT_RES: "{{P}}{{M}}.ERES NPP"
+          FE_EN: "{{P}}{{M}}.UEIP CP"
+          POT_CFG: "0"
+      - file: writeVariable.template
+        args: { <<: *var_args, var: KT, tag: Amplifier_Disable_Time, val: "{{kill_time}}" }
+      - file: writeVariable.template
+        args: { <<: *var_args, var: HMACC, tag: Homing_Acceleration, val: "{{home_acc}}" }
+      - file: readVariable.template
+        args: { <<: *var_args, var: KT, tag: Amplifier_Disable_Time }
+      - file: readVariable.template
+        args: { <<: *var_args, var: HMACC, tag: Homing_Acceleration }
+      - file: readVariable.template
+        args: { <<: *var_args, var: VELO, tag: Velocity }
+      - file: readVariable.template
+        args: { <<: *var_args, var: ACCL, tag: Acceleration }
+      - file: readVariable.template
+        args: { <<: *var_args, var: V, tag: DC_Voltage }
+      - file: NX102_motorPLCAxisEng.template
+        args: *eng_args
+      # last: ibek groups ioc.subst by template in first-seen order, and an
+      # alias must follow its target records (the Eng ones included)
+      - file: alias.template
+        args: &alias_args
+          P:
+          M:
+          CP: "{{controller.P}}"
+          CM: "{{controller.M}}"
+          ADDR:
+
+  - name: NX102_MotorAxisPot
+    description: |-
+      NX102_MotorAxis with a potentiometer as the motor record readback.
+
+      Adds $(P)$(M):POT_RAW, read from the PLC over EtherIP, and $(P)$(M):POT,
+      the raw value converted to EGUs by a 5th-order polynomial. B..G are the
+      coefficients printed by dls-motor-scanning `calibrate`.
+
+      The motor record uses :POT as RBV (RDBL=$(P)$(M):POT, URIP=1, RRES=1,
+      UEIP=0) and following error is calculated against :POT, so RDBD and
+      fe_lim must sit above the pot noise.
+
+      With pot_monitor_only=true the axis is a plain NX102_MotorAxis plus
+      :POT_RAW and :POT, and the motor record does not use the pot.
+    parameters:
+      <<: *axis
+      pot_monitor_only:
+        type: bool
+        description: |-
+          Create :POT_RAW and :POT but keep the default motor record readback
+        default: false
+      MRES:
+        type: str
+        description: |-
+          Motor step size (EGU). Must be set unless pot_monitor_only
+        default: ""
+      ERES:
+        type: str
+        description: |-
+          Encoder step size (EGU). Empty means no encoder, or -0.0005 if
+          pot_monitor_only
+        default: ""
+      RDBD:
+        type: str
+        description: |-
+          Retry deadband (EGU) on the pot readback; set above pot noise + fit
+          error. Empty means 0.005, or 2 * |ERES| if pot_monitor_only
+        default: ""
+      RTRY:
+        type: int
+        description: |-
+          Max retry count
+        default: 3
+      pot_idx:
+        type: int
+        description: |-
+          Element of pot_tag holding this axis pot
+      pot_tag:
+        type: str
+        description: |-
+          PLC tag holding the raw pot values
+        default: Pts.Raw
+      pot_period:
+        type: str
+        description: |-
+          EtherIP scan period for the pot (s)
+        default: "0.1"
+      B:
+        type: str
+        description: Pot polynomial coefficient, A^0
+        default: "0"
+      C:
+        type: str
+        description: Pot polynomial coefficient, A^1
+        default: "1"
+      D:
+        type: str
+        description: Pot polynomial coefficient, A^2
+        default: "0"
+      E:
+        type: str
+        description: Pot polynomial coefficient, A^3
+        default: "0"
+      F:
+        type: str
+        description: Pot polynomial coefficient, A^4
+        default: "0"
+      G:
+        type: str
+        description: Pot polynomial coefficient, A^5
+        default: "0"
+      pot_prec:
+        type: int
+        description: |-
+          Display precision of :POT
+        default: 4
+
+    pre_init:
+      - value: |
+          plcCreateMotorAxis({{controller.name}}, {{ADDR}}, {{has_encoder}})
+
+    databases:
+      - file: NX102_motorPLCAxis.template
+        args:
+          <<: *axis_db_args
+          # pot_monitor_only: NX102_MotorAxis defaults for anything left empty,
+          # otherwise the motor record reads back from, and following error is
+          # calculated against, :POT
+          ERES: "{{ (ERES or '-0.0005') if pot_monitor_only else ERES }}"
+          MRES: "{{ MRES or '0.000078125' }}"
+          RRES: "{{ '' if pot_monitor_only else '1' }}"
+          URIP: "{{ '' if pot_monitor_only else '1' }}"
+          UEIP: "{{ '1' if pot_monitor_only else '0' }}"
+          RDBL: "{{ '' if pot_monitor_only else P ~ M ~ ':POT' }}"
+          RTRY:
+          RDBD: "{{ RDBD or ((2 * ((ERES or '-0.0005') | float)) | abs if pot_monitor_only else '0.005') }}"
+          FE_ACT: "{{ P ~ M ~ ('.REP' if pot_monitor_only else ':POT') }}"
+          FE_ACT_RES: "{{ P ~ M ~ '.ERES NPP' if pot_monitor_only else '1' }}"
+          FE_EN: "{{ P ~ M ~ '.UEIP CP' if pot_monitor_only else '1' }}"
+          POT_CFG: "1"
+      - file: NX102_motorPLCPotRaw.template
+        args:
+          P:
+          M:
+          eip_port: "{{controller.port}}"
+          pot_tag:
+          pot_idx:
+          pot_period:
+      - file: NX102_motorPLCPot.template
+        args:
+          P:
+          M:
+          B:
+          C:
+          D:
+          E:
+          F:
+          G:
+          EGU:
+          PREC: "{{pot_prec}}"
+      - file: writeVariable.template
+        args: { <<: *var_args, var: KT, tag: Amplifier_Disable_Time, val: "{{kill_time}}" }
+      - file: writeVariable.template
+        args: { <<: *var_args, var: HMACC, tag: Homing_Acceleration, val: "{{home_acc}}" }
+      - file: readVariable.template
+        args: { <<: *var_args, var: KT, tag: Amplifier_Disable_Time }
+      - file: readVariable.template
+        args: { <<: *var_args, var: HMACC, tag: Homing_Acceleration }
+      - file: readVariable.template
+        args: { <<: *var_args, var: VELO, tag: Velocity }
+      - file: readVariable.template
+        args: { <<: *var_args, var: ACCL, tag: Acceleration }
+      - file: readVariable.template
+        args: { <<: *var_args, var: V, tag: DC_Voltage }
+      - file: NX102_motorPLCAxisEng.template
+        args: *eng_args
+      - file: alias.template
+        args: *alias_args
+
+  - name: NX102_MotorAxisSpare
+    description: |-
+      Placeholder for an unused axis address on an NX102_MotorController,
+      with the NX102_MotorAxis defaults and no alias records.
+      builder.py created these automatically in Finalise(); ibek cannot, so
+      add one for each address 1-8 that has no real axis.
+    parameters:
+      controller:
+        type: object
+        description: |-
+          The NX102_MotorController this axis belongs to
+      ADDR:
+        type: int
+        description: |-
+          Unused axis address (1-8)
+      spare_no:
+        type: int
+        description: |-
+          Spare counter, gives the entry name MOT.SPARE<spare_no>
+        default: 1
+
+    pre_init:
+      - value: |
+          plcCreateMotorAxis({{controller.name}}, {{ADDR}}, 1)
+
+    databases:
+      - file: NX102_motorPLCAxis.template
+        args:
+          # same key order as the other entities: ibek writes each row in its
+          # own order under the first row's header
+          name: MOT.SPARE{{spare_no}}
+          controller: "{{controller.name}}"
+          P: "{{controller.P}}"
+          M: ":A{{ADDR}}"
+          CP: "{{controller.P}}"
+          CM: "{{controller.M}}"
+          ADDR:
+          VELO: "0.5"
+          TWV: "0.1"
+          PREC: "5"
+          DHLM: "0"
+          DLLM: "0"
+          EGU: mm
+          DESC: Spare Axis
+          OFF: "0.0"
+          DIR: "0"
+          fe_lim: "0.1"
+          kill_on_ffe: "1"
+          ERES: "-0.0005"
+          MRES: "0.000078125"
+          RRES: ""
+          URIP: ""
+          UEIP: "1"
+          RDBL: ""
+          RTRY: "3"
+          RDBD: "0.001"
+          FE_ACT: "{{controller.P}}:A{{ADDR}}.REP"
+          FE_ACT_RES: "{{controller.P}}:A{{ADDR}}.ERES NPP"
+          FE_EN: "{{controller.P}}:A{{ADDR}}.UEIP CP"
+          POT_CFG: "0"
+      - file: writeVariable.template
+        args: { <<: *spare_var_args, var: KT, tag: Amplifier_Disable_Time, val: "5" }
+      - file: writeVariable.template
+        args: { <<: *spare_var_args, var: HMACC, tag: Homing_Acceleration, val: "500" }
+      - file: readVariable.template
+        args: { <<: *spare_var_args, var: KT, tag: Amplifier_Disable_Time }
+      - file: readVariable.template
+        args: { <<: *spare_var_args, var: HMACC, tag: Homing_Acceleration }
+      - file: readVariable.template
+        args: { <<: *spare_var_args, var: VELO, tag: Velocity }
+      - file: readVariable.template
+        args: { <<: *spare_var_args, var: ACCL, tag: Acceleration }
+      - file: readVariable.template
+        args: { <<: *spare_var_args, var: V, tag: DC_Voltage }
+      - file: NX102_motorPLCAxisEng.template
+        args:
+          P: "{{controller.P}}"
+          M: ":A{{ADDR}}"
+          ADDR:
+          eip_port: "{{controller.port}}"
+          crate_no: "{{controller.controller_address}}"
+          name: MOT.SPARE{{spare_no}}.ENG
+          current: "1000"
+          EGU: mm
+          home_method: "1"
+          home_velo: "0.5"
+          plc_dir: "0"

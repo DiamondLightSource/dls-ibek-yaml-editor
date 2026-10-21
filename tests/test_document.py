@@ -1,0 +1,110 @@
+import difflib
+from pathlib import Path
+
+from dls_ibek_yaml_editor.catalogue import Catalogue
+from dls_ibek_yaml_editor.document import MISSING, Document, new_entity, text_to_value
+
+from .conftest import SERVICE
+
+IOC_YAML = SERVICE / "config" / "ioc.yaml"
+
+
+def _diff(before: str, after: str) -> list[str]:
+    lines = difflib.unified_diff(before.splitlines(), after.splitlines(), n=0)
+    return [line for line in lines if line[:1] in "+-" and line[:3] not in "+++---"]
+
+
+def test_round_trip_is_identical():
+    assert Document.load(IOC_YAML).dumps() == IOC_YAML.read_text()
+
+
+def test_edit_changes_only_that_line(catalogue: Catalogue):
+    document = Document.load(IOC_YAML)
+    axis = document.of_type("motorPLC.NX102_MotorAxisPot")[0]
+    document.set(axis, "MRES", "1e-05")
+    assert _diff(IOC_YAML.read_text(), document.dumps()) == [
+        "-    MRES: '7.8125e-06'",
+        "+    MRES: '1e-05'",
+    ]
+
+
+def test_new_key_follows_parameter_order(catalogue: Catalogue):
+    document = Document.load(IOC_YAML)
+    axis = document.of_type("motorPLC.NX102_MotorAxisPot")[0]
+    entity_type = catalogue.get("motorPLC.NX102_MotorAxisPot")
+    document.set(axis, "VELO", "1.5", entity_type)
+    keys = list(axis)
+    assert keys.index("VELO") == keys.index("ADDR") + 1
+
+
+def test_key_added_at_end_keeps_separator(catalogue: Catalogue):
+    document = Document.load(IOC_YAML)
+    spare = document.of_type("motorPLC.NX102_MotorAxisSpare")[0]
+    document.set(spare, "zzz", 1)  # unknown key: appended after the last key
+    assert _diff(IOC_YAML.read_text(), document.dumps()) == ["+    zzz: 1"]
+
+
+def test_remove_key():
+    document = Document.load(IOC_YAML)
+    axis = document.of_type("motorPLC.NX102_MotorAxisPot")[1]
+    old = document.set(axis, "pot_monitor_only", MISSING)
+    assert old is True
+    assert _diff(IOC_YAML.read_text(), document.dumps()) == [
+        "-    pot_monitor_only: true",
+    ]
+
+
+def test_insert_and_move_keep_blank_lines():
+    document = Document.load(IOC_YAML)
+    entity = new_entity("epics.EpicsEnvSet")
+    entity["name"] = "A"
+    entity["value"] = "b"
+    document.insert(1, entity)
+    document.move(len(document.entities) - 1, 0)
+    text = document.dumps()
+    assert "  - type: epics.EpicsEnvSet\n    name: A\n    value: b\n\n" in text
+    assert text.endswith("spare_no: 5\n")
+    assert "entities:\n\n  - type: motorPLC.NX102_MotorAxisSpare\n" in text
+    assert "spare_no: 6\n\n  - type: epics.EpicsEnvSet\n" in text
+
+
+def test_new_document(tmp_path: Path):
+    path = tmp_path / "config" / "ioc.yaml"
+    document = Document.new(path, "https://example.com/schema.json", "test IOC")
+    document.insert(0, new_entity("epics.EpicsEnvSet"))
+    document.insert(1, new_entity("epics.EpicsEnvSet"))
+    document.save()
+    text = path.read_text()
+    assert text.startswith("# yaml-language-server: $schema=https://example.com/")
+    assert "ioc_name: \"{{ _global.get_env('IOC_NAME') }}\"" in text
+    assert 'description: "test IOC"' in text
+    assert "  - type: epics.EpicsEnvSet\n\n  - type: epics.EpicsEnvSet\n" in text
+    assert Document.load(path).dumps() == text
+
+
+def test_text_to_value(catalogue: Catalogue):
+    axis = catalogue.get("motorPLC.NX102_MotorAxisPot")
+    assert axis is not None
+    assert text_to_value("", axis.params["ADDR"]) is MISSING
+    assert text_to_value("3", axis.params["ADDR"]) == 3
+    assert text_to_value("{{ n }}", axis.params["ADDR"]) == "{{ n }}"
+    assert text_to_value("20", axis.params["DHLM"]) == "20"  # a str parameter
+    assert text_to_value("true", axis.params["pot_monitor_only"]) is True
+
+
+def test_ids(catalogue: Catalogue):
+    assert Document.load(IOC_YAML).ids(catalogue) == ["MC1"]
+
+
+def test_grouped_keeps_order_within_types():
+    document = Document.load(IOC_YAML)
+    first = document.types_in_order()
+    assert document.grouped(first) == list(document.entities)  # already grouped
+    order = [first[-1], *first[:-1]]  # spares first
+    document.reorder(document.grouped(order))
+    types = [document.entity_type(e) for e in document.entities]
+    assert types[:6] == ["motorPLC.NX102_MotorAxisSpare"] * 6
+    assert [e["spare_no"] for e in document.entities[:6]] == [1, 2, 3, 4, 5, 6]
+    text = document.dumps()
+    assert "spare_no: 6\n\n  - type: epics.EpicsEnvSet\n" in text
+    assert text.endswith("    pot_monitor_only: true\n")  # no trailing blank

@@ -1,0 +1,402 @@
+# yaml-language-server: $schema=https://github.com/epics-containers/ibek/releases/download/3.0.1/ibek.support.schema.json
+
+module: asyn
+
+entity_models:
+  - name: AsynIP
+    description: |-
+      Asyn IP Port
+    parameters:
+      port:
+        type: str
+        description: |-
+          IP address optionally followed by :port
+
+      name:
+        type: id
+        description: |-
+          Identifying port name
+
+      input_eos:
+        type: str
+        description: |-
+          Input end of string (terminator)
+        default: \n
+
+      output_eos:
+        type: str
+        description: |-
+          Output end of string (terminator)
+        default: \n
+
+      priority:
+        type: int
+        description: |-
+          Priority
+        default: 100
+
+      # TODO - can we handle these as bool?
+      noAutoConnect:
+        type: int
+        description: |-
+          Set to stop autoconnect
+        default: 0
+
+      noProcessEos:
+        type: int
+        description: |-
+          Set to avoid processing end of string
+        default: 0
+
+      simulation:
+        type: str
+        description: |-
+          IP port to connect to if in simulation mode
+        default: ""
+
+      baud:
+        type: int
+        description: |-
+          Baud Rate
+        default: 9600
+
+      parity:
+        type: enum
+        description: |-
+          Parity
+        values:
+          even:
+          none:
+          odd:
+        default: none
+
+      crtscts:
+        type: enum
+        description: |-
+          Set hardware flow control on
+        values:
+          Y:
+          N:
+        default: N
+
+      stop:
+        type: enum
+        description: |-
+          Stop Bits
+        values:
+          "1":
+          "2":
+        default: "1"
+
+      disconnectOnReadTimeout:
+        type: enum
+        description: |-
+          Disconnect when a read times out
+        values:
+          Y:
+          N:
+        default: N
+
+    pre_init:
+      - value: |2
+
+          # drvAsynIPPortConfigure(name, port, priority, noAutoConnect, noProcessEos)
+        when: first
+      - value: |
+          drvAsynIPPortConfigure({{name}}, {{port}}, {{priority}}, {{noAutoConnect}}, {{noProcessEos}})
+          {%- if input_eos != "\\n" %}
+          asynOctetSetInputEos({{name}}, 0, "{{input_eos}}")
+          {%- endif %}
+          {%- if output_eos != "\\n" %}
+          asynOctetSetOutputEos({{name}}, 0, "{{output_eos}}")
+          {%- endif %}
+          {%- if disconnectOnReadTimeout != "N" %}
+          asynSetOption({{name}}, 0, "disconnectOnReadTimeout", {{disconnectOnReadTimeout}})
+          {%- endif %}
+          {#- TODO - we need a tidier way to handle Asyn options #}
+
+  - name: AsynIPServer
+    description: |-
+      Asyn IP Server Port
+    parameters:
+      port:
+        type: str
+        description: |-
+          Serial port tty name / IP address optionally followed by protocol
+
+      name:
+        type: id
+        description: |-
+          Override name
+
+      input_eos:
+        type: str
+        description: |-
+          Input end of string (terminator)
+
+      output_eos:
+        type: str
+        description: |-
+          Output end of string (terminator)
+
+      priority:
+        type: int
+        description: |-
+          Priority
+        default: 100
+
+      noAutoConnect:
+        type: bool
+        description: |-
+          Set to stop autoconnect
+
+      noProcessEos:
+        type: bool
+        description: |-
+          Set to avoid processing end of string
+
+      simulation:
+        type: str
+        description: |-
+          IP port to connect to if in simulation mode
+
+      baud:
+        type: int
+        description: |-
+          Baud Rate
+
+      parity:
+        type: enum
+        description: |-
+          Parity
+        values:
+          even:
+          none:
+          odd:
+      crtscts:
+        type: enum
+        description: |-
+          Set hardware flow control on
+        values:
+          Y:
+          N:
+      stop:
+        type: enum
+        description: |-
+          Stop Bits
+        values:
+          "1":
+          "2":
+      disconnectOnReadTimeout:
+        type: enum
+        description: |-
+          Disconnect when a read times out
+        values:
+          Y:
+          N:
+      bits:
+        type: enum
+        description: |-
+          Bits
+        values:
+          "8":
+          "5":
+          "7":
+          "6":
+    pre_init:
+      - value: |
+          %sConfigure("%s", "%s", %d, %d, %d)
+          asynSetOption("%s", 0, "%s", "%s")
+          asynOctetSetInputEos("%s", 0, %s)
+          asynOctetSetOutputEos("%s", 0, %s)
+
+  - name: Vxi11
+    description: |-
+      Asyn vxi11 Port
+    parameters:
+      port:
+        type: str
+        description: |-
+          IP address
+
+      noAutoConnect:
+        type: bool
+        description: |-
+          Set to stop autoconnect
+
+      priority:
+        type: int
+        description: |-
+          Priority
+
+      simulation:
+        type: str
+        description: |-
+          IP port to connect to if in simulation mode
+
+      name:
+        type: id
+        description: |-
+          Asyn Port name
+
+      flags:
+        type: int
+        description: |-
+          flags (lock devices : recover with IFC)
+
+      timeout:
+        type: float
+        description: |-
+          default timeout
+        default: 0.0
+
+      vxiName:
+        type: str
+        description: |-
+          vxi name
+        default: gpib0
+
+    pre_init:
+      - value: |
+          vxi11Configure("%s", "%s", %d, %s, "%s", %d, %d)
+
+  - name: AsynSerial
+    description: |-
+      Asyn Serial Port
+    parameters:
+      port:
+        type: str
+        description: |-
+          Serial port tty name / IP address optionally followed by protocol
+
+      name:
+        type: id
+        description: |-
+          Override name
+
+      input_eos:
+        type: str
+        description: |-
+          Input end of string (terminator)
+        default: \n
+
+      output_eos:
+        type: str
+        description: |-
+          Output end of string (terminator)
+        default: \n
+
+      priority:
+        type: int
+        description: |-
+          Priority
+        default: 100
+
+      noAutoConnect:
+        type: bool
+        description: |-
+          Set to stop autoconnect
+        default: false
+
+      noProcessEos:
+        type: bool
+        description: |-
+          Set to avoid processing end of string
+        default: false
+
+      simulation:
+        type: str
+        description: |-
+          IP port to connect to if in simulation mode
+        default: ""
+
+      baud:
+        type: int
+        description: |-
+          Baud Rate
+        default: 9600
+
+      parity:
+        type: enum
+        description: |-
+          Parity
+        values:
+          E:
+          N:
+          O:
+        default: N
+
+      crtscts:
+        type: enum
+        description: |-
+          Set hardware flow control on
+        values:
+          Y:
+          N:
+        default: N
+
+      stop:
+        type: enum
+        description: |-
+          Stop Bits
+        values:
+          1:
+          2:
+        default: 1
+
+      disconnectOnReadTimeout:
+        type: enum
+        description: |-
+          Disconnect when a read times out
+        values:
+          Y:
+          N:
+        default: N
+
+      bits:
+        type: enum
+        description: |-
+          Bits
+        values:
+          8:
+          5:
+          7:
+          6:
+        default: 8
+
+    pre_init:
+      - when: first
+        value: |
+
+          # drvAsynSerialPortConfigure(name, port, priority, noAutoConnect, noProcessEos)
+      - value: |
+          drvAsynSerialPortConfigure("{{name}}", "{{port}}" , 0, 0, 0)
+          {%- if baud != 9600 %}
+          asynSetOption("{{name}}",0,"baud",{{baud}})
+          {%- endif %}
+          {%- if bits != 8 %}
+          asynSetOption("{{name}}",0,"bits",{{bits}})
+          {%- endif %}
+          {%- if parity != "N" %}
+          asynSetOption("{{name}}",0,"parity","{{parity}}")
+          {%- endif %}
+          {%- if stop != 1 %}
+          asynSetOption("{{name}}",0,"stop","{{stop}}")
+          {%- endif %}
+          {%- if crtscts != "N" %}
+          asynSetOption("{{name}}",0,"crtscts",{{crtscts}})
+          {%- endif %}
+          {%- if noProcessEos %}
+          asynSetOption("{{name}}",0,"noProcessEos",1)
+          {%- endif %}
+          {%- if disconnectOnReadTimeout != "N" %}
+          asynSetOption("{{name}}",0,"disconnectOnReadTimeout", {{disconnectOnReadTimeout}})
+          {%- endif %}
+          {%- if input_eos != "\\n" %}
+          {%- endif %}
+          {%- if input_eos != "\\n" %}
+          asynOctetSetInputEos("{{name}}", 0, "{{input_eos}}")
+          {%- endif %}
+          {%- if output_eos != "\\n" %}
+          asynOctetSetOutputEos("{{name}}", 0, "{{output_eos}}")
+          {%- endif %}
