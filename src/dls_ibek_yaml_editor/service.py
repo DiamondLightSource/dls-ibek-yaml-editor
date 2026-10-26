@@ -74,6 +74,7 @@ def load_catalogue(
     generic_ioc: Path | None = None,
     defs: Path | None = None,
     log: cat.Log = print,
+    refresh: bool = False,
 ) -> cat.Catalogue:
     """The entity catalogue for ``instance``.
 
@@ -86,9 +87,9 @@ def load_catalogue(
         catalogue = cat.from_defs(defs)
     elif generic_ioc is not None:
         tag = ImageRef.parse(image).tag if image else None
-        catalogue = cat.from_generic_ioc(generic_ioc, tag, log)
+        catalogue = cat.from_generic_ioc(generic_ioc, tag, log, refresh)
     elif image is not None:
-        catalogue = cat.from_image(image, log)
+        catalogue = cat.from_image(image, log, refresh)
     else:
         raise ValueError(
             "no image to read entities from: give a service directory with a "

@@ -57,7 +57,7 @@ INDEX_TYPES = {
     "application/vnd.docker.distribution.manifest.list.v2+json",
 }
 IMAGE_SUFFIX = re.compile(r"(-linux|-rtems-beatnik)?(-developer|-runtime)$")
-TIMEOUT = 30
+TIMEOUT = 10
 
 
 class ImageError(Exception):
@@ -320,14 +320,20 @@ def _read_meta(cache: Path) -> dict[str, Any] | None:
     return meta if isinstance(meta, dict) else None
 
 
-def fetch_ibek_defs(image: str, log: Any = print) -> Path:
+def fetch_ibek_defs(image: str, log: Any = print, refresh: bool = False) -> Path:
     """Return a local folder holding ``image``'s ``/epics/ibek-defs`` files.
+
+    A cached tag is used without asking the registry: release tags don't
+    change, and the registry may be slow or unreachable from a workstation.
+    ``refresh`` (or a ``latest`` tag) checks the registry for a new digest.
 
     Raises ImageError when nothing can be fetched and nothing is cached.
     """
     ref = ImageRef.parse(image)
     cache = _cache_dir(ref)
     meta = _read_meta(cache)
+    if meta is not None and not refresh and ref.tag != "latest":
+        return cache
     registry = Registry(ref)
     try:
         digest, manifest = registry.manifest()

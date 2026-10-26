@@ -54,6 +54,10 @@ class Sources:
     image: str | None = None
     generic_ioc: Path | None = None
     defs: Path | None = None
+    refresh: bool = False
+
+    def given(self) -> bool:
+        return any((self.image, self.generic_ioc, self.defs))
 
 
 def _sub_text(text: str, number: int) -> str:
@@ -399,6 +403,7 @@ class MainWindow(QMainWindow):
                         self.sources.generic_ioc,
                         self.sources.defs,
                         log=self._status,
+                        refresh=self.sources.refresh,
                     )
                 document = open_document(instance, self.sources.image)
             finally:
@@ -737,6 +742,8 @@ def run(target: Path | None, sources: Sources) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     window = MainWindow(sources)
     window.show()
-    if target is not None:
-        window.load(target)
+    if target is not None or sources.given():
+        # once the window has been drawn, so it isn't black while loading.
+        # With no target, an untitled instance gets the given entity source.
+        QTimer.singleShot(0, lambda: window.load(target))
     return cast(QApplication, app).exec()

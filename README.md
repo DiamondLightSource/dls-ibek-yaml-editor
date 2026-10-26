@@ -97,4 +97,10 @@ Saving changes only the lines you edited. Comments, quoting and Jinja are kept.
 Images are pulled anonymously. If a registry needs credentials, they are read
 from `~/.docker/config.json` (`docker login`) or from `CI_REGISTRY_*`. Fetched
 definitions are cached in `~/.cache/dls-ibek-yaml-editor`, or wherever
-`DLS_IBEK_YAML_EDITOR_CACHE` points, so they still work offline.
+`DLS_IBEK_YAML_EDITOR_CACHE` points. A cached tag is used without contacting
+the registry, so later runs start at once and work offline. Pass `--refresh`
+to check the registry for an image rebuilt under the same tag (`latest` is
+always checked).
+
+With no target, `--image`, `--generic-ioc` or `--defs` open an untitled
+instance using those entities; Save asks where to write it.

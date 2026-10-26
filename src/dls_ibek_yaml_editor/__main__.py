@@ -47,6 +47,14 @@ def edit(
         Path | None,
         typer.Option(help="A folder of *.ibek.support.yaml to read entities from"),
     ] = None,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh",
+            help="Check the registry for a newer image under the same tag, "
+            "instead of using the cached entity definitions",
+        ),
+    ] = False,
     list_entities: Annotated[
         bool,
         typer.Option(
@@ -70,7 +78,7 @@ def edit(
 ) -> None:
     """Create or edit an ibek ioc.yaml with an xeb-like GUI."""
     if list_entities or validate:
-        _report(target, image, generic_ioc, defs, list_entities, validate)
+        _report(target, image, generic_ioc, defs, refresh, list_entities, validate)
         return
 
     try:
@@ -78,7 +86,7 @@ def edit(
     except ImportError as exc:
         typer.echo(f"Cannot start the GUI: {exc}", err=True)
         raise typer.Exit(1) from exc
-    raise typer.Exit(run(target, Sources(image, generic_ioc, defs)))
+    raise typer.Exit(run(target, Sources(image, generic_ioc, defs, refresh)))
 
 
 def _report(
@@ -86,6 +94,7 @@ def _report(
     image: str | None,
     generic_ioc: Path | None,
     defs: Path | None,
+    refresh: bool,
     list_entities: bool,
     validate: bool,
 ) -> None:
@@ -96,7 +105,9 @@ def _report(
         typer.echo(text, err=True)
 
     instance = resolve(target)
-    catalogue = load_catalogue(instance, image, generic_ioc, defs, log=log)
+    catalogue = load_catalogue(
+        instance, image, generic_ioc, defs, log=log, refresh=refresh
+    )
     for warning in catalogue.warnings:
         log(f"WARNING: {warning}")
     if list_entities:

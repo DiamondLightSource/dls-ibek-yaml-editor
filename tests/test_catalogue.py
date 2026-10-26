@@ -82,7 +82,7 @@ def test_from_generic_ioc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     fetched: list[str] = []
 
-    def fake_fetch(image: str, log: Any = print) -> Path:
+    def fake_fetch(image: str, log: Any = print, refresh: bool = False) -> Path:
         fetched.append(image)
         return base
 

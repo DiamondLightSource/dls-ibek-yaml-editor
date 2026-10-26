@@ -143,8 +143,8 @@ def from_defs(folder: Path) -> Catalogue:
     return catalogue
 
 
-def from_image(image: str, log: Log = print) -> Catalogue:
-    defs = fetch_ibek_defs(image, log)
+def from_image(image: str, log: Log = print, refresh: bool = False) -> Catalogue:
+    defs = fetch_ibek_defs(image, log, refresh)
     catalogue = Catalogue(source=image)
     catalogue.add_files(cached_files(defs))
     return catalogue
@@ -203,7 +203,10 @@ def git_describe(folder: Path) -> str | None:
 
 
 def from_generic_ioc(
-    folder: Path, expected_tag: str | None = None, log: Log = print
+    folder: Path,
+    expected_tag: str | None = None,
+    log: Log = print,
+    refresh: bool = False,
 ) -> Catalogue:
     """Entities of a generic IOC checkout, for unreleased or dev versions.
 
@@ -229,7 +232,7 @@ def from_generic_ioc(
     if developer:
         runtime = ImageRef.parse(developer).with_target("runtime").image
         try:
-            catalogue.add_files(cached_files(fetch_ibek_defs(runtime, log)))
+            catalogue.add_files(cached_files(fetch_ibek_defs(runtime, log, refresh)))
         except Exception as exc:
             message = f"base image {runtime}: {exc}"
             catalogue.warnings.append(message)

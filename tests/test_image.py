@@ -128,7 +128,10 @@ def test_fetch_resolves_symlinks_and_caches(monkeypatch: pytest.MonkeyPatch):
 
     requested.clear()
     assert fetch_ibek_defs(IMAGE, log=lambda _: None) == defs
-    assert requested == ["manifests/2026.10.1"]  # cache hit: manifest only
+    assert requested == []  # cached tag: the registry isn't asked at all
+
+    assert fetch_ibek_defs(IMAGE, log=lambda _: None, refresh=True) == defs
+    assert requested == ["manifests/2026.10.1"]  # same digest: manifest only
 
 
 def test_fetch_uses_cache_when_offline(monkeypatch: pytest.MonkeyPatch):
@@ -141,7 +144,7 @@ def test_fetch_uses_cache_when_offline(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(image.Registry, "get", offline)
     messages: list[str] = []
-    assert fetch_ibek_defs(IMAGE, log=messages.append) == defs
+    assert fetch_ibek_defs(IMAGE, log=messages.append, refresh=True) == defs
     assert "cached" in messages[0]
 
 
