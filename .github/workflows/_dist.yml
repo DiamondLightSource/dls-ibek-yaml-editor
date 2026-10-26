@@ -30,8 +30,10 @@ jobs:
         run: uvx twine check --strict dist/*
 
       - name: Install produced wheel
-        run: python -m pip install dist/*.whl
+        # in a venv of the .python-version Python: the runner's own python
+        # is older than requires-python
+        run: uv venv && uv pip install dist/*.whl
 
       - name: Test module --version works using the installed wheel
         # If more than one module in src/ replace with module name to test
-        run: python -m $(ls --hide='*.egg-info' src | head -1) --version
+        run: .venv/bin/python -m $(ls --hide='*.egg-info' src | head -1) --version
