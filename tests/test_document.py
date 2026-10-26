@@ -108,3 +108,12 @@ def test_grouped_keeps_order_within_types():
     text = document.dumps()
     assert "spare_no: 6\n\n  - type: epics.EpicsEnvSet\n" in text
     assert text.endswith("    pot_monitor_only: true\n")  # no trailing blank
+
+
+def test_comment_between_entities_is_kept():
+    text = IOC_YAML.read_text().replace(
+        "\n  - type: motorPLC.NX102_MotorAxisPot\n",
+        "\n  # Axes\n  - type: motorPLC.NX102_MotorAxisPot\n",
+        1,
+    )
+    assert Document(text).dumps() == text

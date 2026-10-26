@@ -153,6 +153,8 @@ class Document:
                     tokens[2] = None
             last = entity.ca.items.setdefault(keys[-1], [None, None, None, None])
             blank = _is_blank(last[2])
+            if last[2] is not None and not blank:
+                continue  # a comment before the next entity: keep it
             if position < final and self.separated and not blank:
                 last[2] = CommentToken("\n\n", _mark(), None)
             elif position == final and blank and not self.trailing_blank:
