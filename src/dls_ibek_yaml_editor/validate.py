@@ -47,6 +47,7 @@ def validate(document: Document, catalogue: Catalogue, ioc_name: str) -> list[Pr
         return [Problem(None, None, f"cannot build the ibek model: {exc}")]
 
     data = document.plain()
+    active = document.active()
     data["ioc_name"] = ioc_name
     data.setdefault("description", "")
     UTILS.set_ioc_name(ioc_name)
@@ -55,7 +56,11 @@ def validate(document: Document, catalogue: Catalogue, ioc_name: str) -> list[Pr
         with contextlib.redirect_stdout(output), _quiet():
             ioc_model(**data)
     except ValidationError as exc:
-        return _without_jinja_noise([_problem(error) for error in exc.errors()])
+        problems = _without_jinja_noise([_problem(error) for error in exc.errors()])
+        for problem in problems:  # back to positions in the whole file
+            if problem.entity is not None and problem.entity < len(active):
+                problem.entity = active[problem.entity]
+        return problems
     except Exception as exc:
         return [Problem(None, None, str(exc))]
     finally:

@@ -10,7 +10,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QItemSelectionModel
+    from PySide6.QtCore import QItemSelectionModel, Qt
     from PySide6.QtWidgets import QApplication, QMessageBox
 except ImportError as exc:  # pragma: no cover - depends on the system
     pytest.skip(f"Qt is not usable here: {exc}", allow_module_level=True)
@@ -262,3 +262,38 @@ def test_object_reference_choices(window: MainWindow, service: Path):
     index = table.index(0, _column(window, "controller"))
     editor: Any = CellDelegate().createEditor(window, None, index)  # type: ignore[arg-type]
     assert [editor.itemText(i) for i in range(editor.count())] == ["", "MC1"]
+
+
+def test_x_column_disables_a_row(window: MainWindow, service: Path):
+    window.load(service)
+    window.show_type("motorPLC.NX102_MotorAxisPot")
+    table = window.table_view.table()
+    assert table is not None
+    index = table.index(0, 0)
+    assert table.headerData(0, Qt.Orientation.Horizontal) == "X"
+    assert index.data() == ""
+    table.setData(index, "X")
+    assert index.data() == "X"
+    document = window.model.document  # type: ignore[union-attr]
+    assert document.is_commented(table.entity(0))
+    assert "  # - type: motorPLC.NX102_MotorAxisPot\n" in document.dumps()
+    _select(window, [(0, 0)])
+    window.table_view.clear()
+    assert not document.is_commented(table.entity(0))
+    window.model.stack.undo()  # type: ignore[union-attr]
+    assert index.data() == "X"
+
+
+def test_double_click_toggles_x(window: MainWindow, service: Path):
+    from PySide6.QtWidgets import QAbstractItemView
+
+    window.load(service)
+    window.show_type("motorPLC.NX102_MotorAxisPot")
+    table = window.table_view.table()
+    assert table is not None
+    index = table.index(0, 0)
+    double = QAbstractItemView.EditTrigger.DoubleClicked
+    assert not window.table_view.edit(index, double, None)  # no editor opens
+    assert index.data() == "X"
+    window.table_view.edit(index, double, None)
+    assert index.data() == ""

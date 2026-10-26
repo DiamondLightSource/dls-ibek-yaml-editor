@@ -3,6 +3,7 @@ from pathlib import Path
 
 from dls_ibek_yaml_editor.catalogue import Catalogue
 from dls_ibek_yaml_editor.document import MISSING, Document, new_entity, text_to_value
+from dls_ibek_yaml_editor.validate import validate
 
 from .conftest import SERVICE
 
@@ -108,6 +109,55 @@ def test_grouped_keeps_order_within_types():
     text = document.dumps()
     assert "spare_no: 6\n\n  - type: epics.EpicsEnvSet\n" in text
     assert text.endswith("    pot_monitor_only: true\n")  # no trailing blank
+
+
+def _comment_out_first_axis(text: str) -> str:
+    """fe99i with its first axis commented out as VS Code's Ctrl+/ does."""
+    lines = text.splitlines(keepends=True)
+    start = lines.index("  - type: motorPLC.NX102_MotorAxisPot\n")
+    end = lines.index("\n", start)
+    for n in range(start, end):
+        lines[n] = "  # " + lines[n][2:]
+    return "".join(lines)
+
+
+def test_commented_entity_round_trip(catalogue: Catalogue):
+    text = _comment_out_first_axis(IOC_YAML.read_text())
+    document = Document(text)
+    axes = document.of_type("motorPLC.NX102_MotorAxisPot")
+    assert document.is_commented(axes[0])
+    assert not document.is_commented(axes[1])
+    assert document.dumps() == text
+    # it is left out of validation and of the reference choices
+    assert len(document.plain()["entities"]) == len(document.entities) - 1
+    assert axes[0]["name"] not in document.ids(catalogue)
+    assert validate(document, catalogue, "FE99I-MO-IOC-01") == []
+
+
+def test_comment_and_uncomment(catalogue: Catalogue):
+    document = Document.load(IOC_YAML)
+    axis = document.of_type("motorPLC.NX102_MotorAxisPot")[0]
+    document.set_commented(axis, True)
+    assert document.dumps() == _comment_out_first_axis(IOC_YAML.read_text())
+    document.set_commented(axis, False)
+    assert document.dumps() == IOC_YAML.read_text()
+
+
+def test_other_comments_are_left_alone():
+    text = IOC_YAML.read_text().replace(
+        "entities:\n", "entities:\n  # - type: not yaml: [\n  # just a note\n", 1
+    )
+    document = Document(text)
+    assert not any(document.is_commented(e) for e in document.entities)
+    assert document.dumps() == text
+
+
+def test_problems_point_past_commented_entities(catalogue: Catalogue):
+    document = Document(_comment_out_first_axis(IOC_YAML.read_text()))
+    second = document.of_type("motorPLC.NX102_MotorAxisPot")[1]
+    document.set(second, "ADDR", "x")
+    problems = validate(document, catalogue, "FE99I-MO-IOC-01")
+    assert [p.entity for p in problems] == [document.index_of(second)]
 
 
 def test_comment_between_entities_is_kept():

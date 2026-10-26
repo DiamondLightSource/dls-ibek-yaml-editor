@@ -9,7 +9,14 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 from ruamel.yaml.comments import CommentedMap
 
 from ..catalogue import Catalogue
-from ..document import MISSING, Document, new_entity, text_to_value, value_to_text
+from ..document import (
+    COMMENTED,
+    MISSING,
+    Document,
+    new_entity,
+    text_to_value,
+    value_to_text,
+)
 
 
 class DocumentModel(QObject):
@@ -47,6 +54,12 @@ class DocumentModel(QObject):
     def set_text(self, entity: CommentedMap, key: str, text: str) -> bool:
         entity_type = self.catalogue.get(self.document.entity_type(entity))
         param = entity_type.params.get(key) if entity_type else None
+        if key == COMMENTED:
+            commented = bool(text.strip())
+            if commented == self.document.is_commented(entity):
+                return False
+            self.stack.push(SetCommented(self, entity, commented))
+            return True
         value = text_to_value(text, param)
         current = self.document.get(entity, key)
         if value_to_text(current) == value_to_text(value):
@@ -119,6 +132,25 @@ class SetValue(QUndoCommand):
             position = self.position if self.position is not None else len(self.entity)
             self.entity.insert(position, self.key, self.old)
         self.model.valueChanged.emit(self.entity, self.key)
+
+
+class SetCommented(QUndoCommand):
+    def __init__(self, model: DocumentModel, entity: CommentedMap, commented: bool):
+        name = entity.get("name") or entity.get("type", "")
+        super().__init__(f"{'Comment out' if commented else 'Uncomment'} {name}")
+        self.model = model
+        self.entity = entity
+        self.commented = commented
+
+    def _apply(self, commented: bool) -> None:
+        self.model.document.set_commented(self.entity, commented)
+        self.model.valueChanged.emit(self.entity, COMMENTED)
+
+    def redo(self) -> None:
+        self._apply(self.commented)
+
+    def undo(self) -> None:
+        self._apply(not self.commented)
 
 
 class InsertEntity(QUndoCommand):

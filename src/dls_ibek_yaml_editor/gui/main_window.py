@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QModelIndex, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QModelIndex, QPersistentModelIndex, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from ruamel.yaml.comments import CommentedMap
 
 from ..catalogue import Catalogue
-from ..document import Document
+from ..document import COMMENTED, Document
 from ..service import Instance, load_catalogue, open_document, resolve
 from ..validate import Problem, validate
 from .commands import DocumentModel
@@ -74,6 +74,9 @@ def _sub_text(text: str, number: int) -> str:
     )
 
 
+ALL_TRIGGERS = QAbstractItemView.EditTrigger.AllEditTriggers
+
+
 class TableView(QTableView):
     """The entity table, with xeb's clipboard and fill operations."""
 
@@ -107,6 +110,30 @@ class TableView(QTableView):
 
     def table(self) -> EntityTableModel | None:
         return cast(EntityTableModel | None, self.model())
+
+    def edit(  # type: ignore[override]
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+        trigger: QAbstractItemView.EditTrigger = ALL_TRIGGERS,
+        event: QEvent | None = None,
+    ) -> bool:
+        """As in xeb, double-clicking (or typing in) the X cell toggles it."""
+        table = self.table()
+        if (
+            table is not None
+            and table.editable
+            and index.isValid()
+            and table.columns[index.column()] == COMMENTED
+            and trigger
+            in (
+                QAbstractItemView.EditTrigger.DoubleClicked,
+                QAbstractItemView.EditTrigger.EditKeyPressed,
+                QAbstractItemView.EditTrigger.AnyKeyPressed,
+            )
+        ):
+            table.setData(index, "" if index.data() else "X")
+            return False
+        return super().edit(index, trigger, event)  # type: ignore[arg-type]
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Delete:

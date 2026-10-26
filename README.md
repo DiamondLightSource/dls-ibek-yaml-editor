@@ -68,6 +68,11 @@ Inside the table:
   parameters.
 - Enums and booleans are edited with drop-downs. Object references offer the
   ids defined in the file.
+- The first column, **X**, comments a row out, as in xeb. The entity is saved
+  as a commented-out block (`  # - type: …`), as VS Code's Ctrl+/ would write
+  it, and blocks like that in an existing file open as X rows. ibek ignores a
+  commented entity, so validation skips it and its ids can't be referenced.
+  Clear the cell (Ctrl+D) to uncomment it.
 
 The Edit menu keeps xeb's commands and shortcuts:
 

@@ -14,7 +14,7 @@ from PySide6.QtGui import QBrush, QColor, QFont
 from ruamel.yaml.comments import CommentedMap
 
 from ..catalogue import EntityType, Param
-from ..document import MISSING, value_to_text
+from ..document import COMMENTED, MISSING, value_to_text
 from .commands import DocumentModel
 
 Index = QModelIndex | QPersistentModelIndex
@@ -22,6 +22,13 @@ Index = QModelIndex | QPersistentModelIndex
 REQUIRED = QColor(255, 200, 200)
 PROBLEM = QColor(255, 170, 120)
 DEFAULT = QColor(140, 140, 140)
+# xeb's colours for a commented-out row
+DISABLED = QColor(160, 180, 220)
+DISABLED_TEXT = QColor(80, 100, 140)
+DISABLED_TIP = (
+    "X: commented out. The entity stays in the file as a comment, so ibek "
+    "ignores it and its ids can't be referenced. Double-click to toggle."
+)
 ROOT = QModelIndex()
 
 
@@ -45,10 +52,11 @@ class EntityTableModel(QAbstractTableModel):
 
     def _refresh(self) -> None:
         self.rows = self.model.document.of_type(self.type_name)
+        # the first column is xeb's "X": the entity is disabled
         if self.entity_type is not None:
-            self.columns = list(self.entity_type.params)
+            self.columns = [COMMENTED, *self.entity_type.params]
         else:
-            keys: dict[str, None] = {}
+            keys: dict[str, None] = {COMMENTED: None}
             for entity in self.rows:
                 for key in entity:
                     if key != "type":
@@ -63,7 +71,10 @@ class EntityTableModel(QAbstractTableModel):
     def _on_value(self, entity: object, key: str) -> None:
         for row, candidate in enumerate(self.rows):
             if candidate is entity:
-                if key in self.columns:
+                if key == COMMENTED:  # the whole row changes colour
+                    last = self.index(row, len(self.columns) - 1)
+                    self.dataChanged.emit(self.index(row, 0), last)
+                elif key in self.columns:
                     index = self.index(row, self.columns.index(key))
                     self.dataChanged.emit(index, index)
                 else:
@@ -101,6 +112,9 @@ class EntityTableModel(QAbstractTableModel):
         value = entity.get(key, MISSING)
         param = self.param(index.column())
         problems = self.problems.get((id(entity), key), [])
+        disabled = self.model.document.is_commented(entity)
+        if key == COMMENTED:
+            return self._enabled_data(disabled, problems, role)
         if role == Qt.ItemDataRole.DisplayRole:
             if value is MISSING:
                 return param.default_text() if param else ""
@@ -108,6 +122,8 @@ class EntityTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.EditRole:
             return value_to_text(value)
         if role == Qt.ItemDataRole.ForegroundRole:
+            if disabled:
+                return QBrush(DISABLED_TEXT)
             if value is MISSING:
                 return QBrush(DEFAULT)
         if role == Qt.ItemDataRole.FontRole and value is MISSING:
@@ -117,6 +133,8 @@ class EntityTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.BackgroundRole:
             if problems:
                 return QBrush(PROBLEM)
+            if disabled:
+                return QBrush(DISABLED)
             if value is MISSING and param is not None and param.required:
                 return QBrush(REQUIRED)
         if role == Qt.ItemDataRole.ToolTipRole:
@@ -130,6 +148,19 @@ class EntityTableModel(QAbstractTableModel):
             return "\n".join(lines) or None
         return None
 
+    def _enabled_data(self, disabled: bool, problems: list[str], role: int) -> Any:
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+            return "X" if disabled else ""
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return Qt.AlignmentFlag.AlignCenter
+        if role == Qt.ItemDataRole.BackgroundRole:
+            if problems:
+                return QBrush(PROBLEM)
+            return QBrush(DISABLED) if disabled else None
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return "\n".join([*problems, DISABLED_TIP])
+        return None
+
     def headerData(
         self,
         section: int,
@@ -138,6 +169,12 @@ class EntityTableModel(QAbstractTableModel):
     ) -> Any:
         if orientation == Qt.Orientation.Horizontal:
             if section >= len(self.columns):
+                return None
+            if self.columns[section] == COMMENTED:
+                if role == Qt.ItemDataRole.DisplayRole:
+                    return "X"
+                if role == Qt.ItemDataRole.ToolTipRole:
+                    return DISABLED_TIP
                 return None
             if role == Qt.ItemDataRole.DisplayRole:
                 return self.columns[section]
