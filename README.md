@@ -21,6 +21,7 @@ What            | Where
 Source          | <https://github.com/DiamondLightSource/dls-ibek-yaml-editor>
 PyPI            | `pip install dls-ibek-yaml-editor`
 Releases        | <https://github.com/DiamondLightSource/dls-ibek-yaml-editor/releases>
+Code structure  | [docs/architecture.md](docs/architecture.md)
 
 ## Usage
 
