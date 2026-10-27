@@ -5,14 +5,16 @@ from __future__ import annotations
 import contextlib
 import io
 import warnings
+from collections.abc import Generator
 from dataclasses import dataclass
-from typing import Any
+from threading import RLock
 
 from ibek.entity_factory import EntityFactory
 from ibek.ioc import clear_entity_model_ids
 from ibek.ioc_factory import IocFactory
 from ibek.utils import UTILS
 from pydantic import ValidationError
+from pydantic_core import ErrorDetails
 
 from .catalogue import Catalogue
 from .document import Document
@@ -20,6 +22,7 @@ from .document import Document
 __all__ = ["Problem", "validate"]
 
 JINJA_MISMATCH = "String should match pattern"
+_VALIDATION_LOCK = RLock()
 
 
 @dataclass
@@ -37,6 +40,11 @@ class Problem:
 
 def validate(document: Document, catalogue: Catalogue, ioc_name: str) -> list[Problem]:
     """All problems ibek finds in ``document``; an empty list means valid."""
+    with _ibek_context(ioc_name):
+        return _validate(document, catalogue, ioc_name)
+
+
+def _validate(document: Document, catalogue: Catalogue, ioc_name: str) -> list[Problem]:
     output = io.StringIO()
     try:
         with contextlib.redirect_stdout(output), _quiet():
@@ -50,8 +58,6 @@ def validate(document: Document, catalogue: Catalogue, ioc_name: str) -> list[Pr
     active = document.active()
     data["ioc_name"] = ioc_name
     data.setdefault("description", "")
-    UTILS.set_ioc_name(ioc_name)
-    clear_entity_model_ids()
     try:
         with contextlib.redirect_stdout(output), _quiet():
             ioc_model(**data)
@@ -63,8 +69,6 @@ def validate(document: Document, catalogue: Catalogue, ioc_name: str) -> list[Pr
         return problems
     except Exception as exc:
         return [Problem(None, None, str(exc))]
-    finally:
-        clear_entity_model_ids()
     return []
 
 
@@ -86,14 +90,28 @@ def _without_jinja_noise(problems: list[Problem]) -> list[Problem]:
 
 
 @contextlib.contextmanager
-def _quiet():
+def _ibek_context(ioc_name: str) -> Generator[None]:
+    """Serialise this adapter's use of ibek globals and always clean them up."""
+    with _VALIDATION_LOCK:
+        previous_name = UTILS.ioc_name
+        clear_entity_model_ids()
+        UTILS.set_ioc_name(ioc_name)
+        try:
+            yield
+        finally:
+            clear_entity_model_ids()
+            UTILS.set_ioc_name(previous_name)
+
+
+@contextlib.contextmanager
+def _quiet() -> Generator[None]:
     """Hide ibek's own deprecation warnings (e.g. pydantic's model_fields)."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         yield
 
 
-def _problem(error: Any) -> Problem:
+def _problem(error: ErrorDetails) -> Problem:
     loc = list(error.get("loc", ()))
     entity: int | None = None
     field: str | None = None

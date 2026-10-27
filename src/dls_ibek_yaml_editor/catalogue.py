@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from ibek.parameters import EnumParam
+from ibek.parameters import Param as IbekParam
 from ibek.support import Support
 from ruamel.yaml import YAML
 
-from .image import ImageRef, cached_files, fetch_ibek_defs
+from .image import ImageError, ImageRef, cached_files, fetch_ibek_defs
 
 __all__ = [
     "Catalogue",
@@ -29,7 +30,7 @@ __all__ = [
 ]
 
 SUPPORT_GLOB = "*.ibek.support.yaml"
-Log = Callable[[str], Any]
+Log = Callable[[str], None]
 
 
 @dataclass
@@ -91,8 +92,9 @@ class Catalogue:
             try:
                 support = load_support(path)
             except Exception as exc:
-                self.warnings.append(f"{path}: {exc}")
-                continue
+                raise ValueError(
+                    f"invalid support definitions in {path}: {exc}"
+                ) from exc
             # a later definition of a module replaces the whole module
             for key in [k for k, t in self.types.items() if t.module == support.module]:
                 del self.types[key]
@@ -116,10 +118,12 @@ class Catalogue:
 
 def load_support(path: Path) -> Support:
     data = YAML(typ="safe").load(path)
+    if not isinstance(data, dict):
+        raise ValueError("support YAML must be a mapping")
     return Support(**data)
 
 
-def _make_param(name: str, param: Any) -> Param:
+def _make_param(name: str, param: IbekParam) -> Param:
     choices: list[str] = []
     if isinstance(param, EnumParam):
         choices = [str(key) for key in param.values]
@@ -138,8 +142,15 @@ def _make_param(name: str, param: Any) -> Param:
 # sources
 # --------------------------------------------------------------------------- #
 def from_defs(folder: Path) -> Catalogue:
+    if not folder.is_dir():
+        raise FileNotFoundError(f"definition directory does not exist: {folder}")
+    paths = sorted(folder.glob(SUPPORT_GLOB))
+    if not paths:
+        raise ValueError(f"no {SUPPORT_GLOB} files in {folder}")
     catalogue = Catalogue(source=str(folder))
-    catalogue.add_files(sorted(folder.glob(SUPPORT_GLOB)))
+    catalogue.add_files(paths)
+    if not catalogue.types:
+        raise ValueError(f"no entity types found in {folder}")
     return catalogue
 
 
@@ -147,6 +158,8 @@ def from_image(image: str, log: Log = print, refresh: bool = False) -> Catalogue
     defs = fetch_ibek_defs(image, log, refresh)
     catalogue = Catalogue(source=image)
     catalogue.add_files(cached_files(defs))
+    if not catalogue.types:
+        raise ValueError(f"no entity types found in {image}")
     return catalogue
 
 
@@ -232,15 +245,30 @@ def from_generic_ioc(
     if developer:
         runtime = ImageRef.parse(developer).with_target("runtime").image
         try:
-            catalogue.add_files(cached_files(fetch_ibek_defs(runtime, log, refresh)))
-        except Exception as exc:
-            message = f"base image {runtime}: {exc}"
+            base = fetch_ibek_defs(runtime, log, refresh)
+        except ImageError as exc:
+            # Unreachable registry, nothing cached: the checkout's own modules
+            # are still useful, and the warning dialog says what is missing.
+            # Invalid definitions, once fetched, are still an error.
+            message = (
+                f"base image {runtime} unavailable, so its modules "
+                f"(asyn, iocStats, ...) are missing: {exc}"
+            )
             catalogue.warnings.append(message)
             log(f"WARNING: {message}")
+        else:
+            catalogue.add_files(cached_files(base))
 
     epics = folder / "ibek-support" / "_ansible" / "epics.ibek.support.yaml"
     paths = [epics] if epics.is_file() else []
     for support in folders:
-        paths.extend(sorted((folder / support).glob(SUPPORT_GLOB)))
+        directory = folder / support
+        if not directory.is_dir():
+            raise FileNotFoundError(
+                f"support directory from Dockerfile is missing: {directory}"
+            )
+        paths.extend(sorted(directory.glob(SUPPORT_GLOB)))
     catalogue.add_files(paths)
+    if not catalogue.types:
+        raise ValueError(f"no entity types found in {folder}")
     return catalogue

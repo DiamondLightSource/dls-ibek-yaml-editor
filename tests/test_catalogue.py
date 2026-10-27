@@ -51,12 +51,12 @@ def test_later_module_replaces_earlier(tmp_path: Path, catalogue: Catalogue):
     assert [t.name for t in catalogue.modules["motorPLC"]] == ["Only"]
 
 
-def test_bad_file_is_a_warning(tmp_path: Path, catalogue: Catalogue):
+def test_bad_file_is_an_error(tmp_path: Path, catalogue: Catalogue):
     bad = tmp_path / "bad.ibek.support.yaml"
     bad.write_text("module: bad\nentity_models: 3\n")
-    catalogue.add_files([bad])
+    with pytest.raises(ValueError, match="bad.ibek.support.yaml"):
+        catalogue.add_files([bad])
     assert "bad" not in catalogue.modules
-    assert str(bad) in catalogue.warnings[0]
 
 
 def test_parse_dockerfile():
@@ -73,8 +73,10 @@ def test_from_generic_ioc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     shutil.copy(DATA / "Dockerfile.dlsmotorplc", checkout.parent / "Dockerfile")
     checkout.mkdir()
     shutil.move(checkout.parent / "Dockerfile", checkout / "Dockerfile")
+    _, folders = parse_dockerfile(checkout / "Dockerfile")
+    for folder in folders:
+        (checkout / folder).mkdir(parents=True, exist_ok=True)
     dls = checkout / "ibek-support-dls" / "motorPLC"
-    dls.mkdir(parents=True)
     shutil.copy(DEFS / "motorPLC.ibek.support.yaml", dls)
     base = tmp_path / "base"
     base.mkdir()
@@ -92,3 +94,45 @@ def test_from_generic_ioc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert fetched == ["ghcr.io/epics-containers/ioc-asyn-runtime:4.45ec3"]
     assert {"devIocStats", "motorPLC"} <= set(result.modules)
     assert "2026.9.1" in result.warnings[0]  # tag drift is a warning only
+
+
+def test_missing_and_empty_defs_are_errors(tmp_path: Path):
+    with pytest.raises(FileNotFoundError):
+        cat.from_defs(tmp_path / "missing")
+    with pytest.raises(ValueError, match="no .*support.yaml"):
+        cat.from_defs(tmp_path)
+
+
+def test_missing_checkout_support_is_an_error(tmp_path: Path):
+    (tmp_path / "Dockerfile").write_text(
+        "COPY ibek-support/motor motor\nRUN ansible.sh motor\n"
+    )
+    with pytest.raises(FileNotFoundError, match="support directory"):
+        cat.from_generic_ioc(tmp_path)
+
+
+def test_generic_ioc_without_base_image_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "ioc-dlsmotorplc"
+    shutil.copy(DATA / "Dockerfile.dlsmotorplc", checkout.parent / "Dockerfile")
+    checkout.mkdir()
+    shutil.move(checkout.parent / "Dockerfile", checkout / "Dockerfile")
+    _, folders = parse_dockerfile(checkout / "Dockerfile")
+    for folder in folders:
+        (checkout / folder).mkdir(parents=True, exist_ok=True)
+    dls = checkout / "ibek-support-dls" / "motorPLC"
+    shutil.copy(DEFS / "motorPLC.ibek.support.yaml", dls)
+    base = tmp_path / "base"
+    base.mkdir()
+    shutil.copy(DEFS / "iocStats.ibek.support.yaml", base)
+
+    def offline(image: str, log: Any = print, refresh: bool = False) -> Path:
+        raise cat.ImageError(f"cannot read the manifest of {image}")
+
+    monkeypatch.setattr(cat, "fetch_ibek_defs", offline)
+    monkeypatch.setattr(cat, "git_describe", lambda _: None)
+    result = cat.from_generic_ioc(checkout, log=lambda _: None)
+    assert "motorPLC" in result.modules  # the checkout's own modules
+    assert "devIocStats" not in result.modules
+    assert any("base image" in w for w in result.warnings)

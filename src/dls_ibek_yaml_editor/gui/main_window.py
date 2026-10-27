@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-import re
 import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QEvent, QModelIndex, QPersistentModelIndex, QSize, Qt, QTimer
+from PySide6.QtCore import QEventLoop, QModelIndex, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
-    QContextMenuEvent,
-    QKeyEvent,
     QKeySequence,
 )
 from PySide6.QtWidgets import (
@@ -29,7 +26,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
-    QTableView,
     QUndoView,
     QVBoxLayout,
     QWidget,
@@ -41,8 +37,8 @@ from ..document import COMMENTED, Document
 from ..service import Instance, find_instance, load_catalogue, open_document
 from ..validate import Problem, validate
 from .commands import DocumentModel
-from .delegates import CellDelegate
 from .table_model import EntityTableModel
+from .table_view import TableView
 
 TITLE = "ibek yaml editor"
 
@@ -58,202 +54,6 @@ class Sources:
 
     def given(self) -> bool:
         return any((self.image, self.generic_ioc, self.defs))
-
-
-def _sub_text(text: str, number: int) -> str:
-    """Increment the last number in ``text`` by ``number``, keeping its width."""
-    match = re.search(r"[^\d]*(\d+)[^\d]*$", text)
-    if not match:
-        return text
-    digits = match.group(1)
-    width = len(digits)
-    return (
-        text[: match.start(1)]
-        + f"{int(digits) + number:0{width}d}"
-        + text[match.end(1) :]
-    )
-
-
-ALL_TRIGGERS = QAbstractItemView.EditTrigger.AllEditTriggers
-
-
-class TableView(QTableView):
-    """The entity table, with xeb's clipboard and fill operations."""
-
-    def __init__(self, window: MainWindow):
-        super().__init__(window)
-        self.window_ = window
-        self.setItemDelegate(CellDelegate(self))
-        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.setEditTriggers(
-            QAbstractItemView.EditTrigger.DoubleClicked
-            | QAbstractItemView.EditTrigger.EditKeyPressed
-            | QAbstractItemView.EditTrigger.AnyKeyPressed
-        )
-        # drag a row header to reorder entities within the table, as in xeb
-        header = self.verticalHeader()
-        header.setSectionsMovable(True)
-        header.sectionMoved.connect(self._on_row_moved)
-
-    def _on_row_moved(self, _logical: int, old: int, new: int) -> None:
-        header = self.verticalHeader()
-        header.blockSignals(True)
-        header.moveSection(new, old)  # the model reorders; undo the visual move
-        header.blockSignals(False)
-        table = self.table()
-        if table is not None and table.editable:
-            QTimer.singleShot(0, lambda: self._move_row(table, old, new))
-
-    def _move_row(self, table: EntityTableModel, old: int, new: int) -> None:
-        table.move_row(old, new)
-        self.selectRow(new)
-
-    def table(self) -> EntityTableModel | None:
-        return cast(EntityTableModel | None, self.model())
-
-    def edit(  # type: ignore[override]
-        self,
-        index: QModelIndex | QPersistentModelIndex,
-        trigger: QAbstractItemView.EditTrigger = ALL_TRIGGERS,
-        event: QEvent | None = None,
-    ) -> bool:
-        """As in xeb, double-clicking (or typing in) the X cell toggles it."""
-        table = self.table()
-        if (
-            table is not None
-            and table.editable
-            and index.isValid()
-            and table.columns[index.column()] == COMMENTED
-            and trigger
-            in (
-                QAbstractItemView.EditTrigger.DoubleClicked,
-                QAbstractItemView.EditTrigger.EditKeyPressed,
-                QAbstractItemView.EditTrigger.AnyKeyPressed,
-            )
-        ):
-            table.setData(index, "" if index.data() else "X")
-            return False
-        return super().edit(index, trigger, event)  # type: ignore[arg-type]
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Delete:
-            self.clear()
-        else:
-            super().keyPressEvent(event)
-
-    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        self.window_.menu_edit.exec(event.globalPos())
-
-    def _bounds(self) -> tuple[list[QModelIndex], int, int, int, int]:
-        cells = self.selectedIndexes()
-        rows = [c.row() for c in cells] or [0]
-        cols = [c.column() for c in cells] or [0]
-        return cells, min(rows), min(cols), max(rows), max(cols)
-
-    def copy(self) -> None:
-        cells, row0, col0, row1, col1 = self._bounds()
-        if not cells:
-            return
-        data = [[""] * (col1 - col0 + 1) for _ in range(row1 - row0 + 1)]
-        for cell in cells:
-            text = str(cell.data(Qt.ItemDataRole.EditRole) or "")
-            text = text.replace("\n", "\\n").replace("\t", "\\t")
-            data[cell.row() - row0][cell.column() - col0] = text
-        QApplication.clipboard().setText("\n".join("\t".join(r) for r in data))
-
-    def cut(self) -> None:
-        self.copy()
-        self.clear()
-
-    def clear(self) -> None:
-        table = self.table()
-        cells = self.selectedIndexes()
-        if table is not None and cells and table.editable:
-            table.clear_indexes(cells)
-
-    def paste(self) -> None:
-        table = self.table()
-        cells, row0, col0, row1, col1 = self._bounds()
-        if table is None or not cells or not table.editable:
-            return
-        text = QApplication.clipboard().text().rstrip("\n")
-        if "\t" in text or "\n" in text:
-            data = [row.split("\t") for row in text.split("\n")]
-        else:
-            data = [[text] * (col1 - col0 + 1)] * (row1 - row0 + 1)
-        data = [[v.replace("\\n", "\n").replace("\\t", "\t") for v in r] for r in data]
-        stack = table.model.stack
-        stack.beginMacro("Paste from clipboard")
-        if len(cells) == 1:
-            # one cell selected: paste the whole clipboard, adding rows if needed
-            missing = row0 + len(data) - table.rowCount()
-            if missing > 0:
-                table.insert_rows(table.rowCount(), missing)
-            for r, row in enumerate(data):
-                for c, value in enumerate(row):
-                    if col0 + c < table.columnCount():
-                        table.setData(table.index(row0 + r, col0 + c), value)
-        else:
-            # many cells selected: tile the clipboard over the selection
-            rows, cols = len(data), max(len(r) for r in data)
-            for cell in cells:
-                row = data[(cell.row() - row0) % rows]
-                column = (cell.column() - col0) % cols
-                if column < len(row):
-                    table.setData(cell, row[column])
-        stack.endMacro()
-
-    def fill(self, increment: bool = False) -> None:
-        table = self.table()
-        cells, row0, col0, row1, _ = self._bounds()
-        if table is None or not cells or not table.editable:
-            return
-        stack = table.model.stack
-        stack.beginMacro("Increment Cells" if increment else "Fill Cells")
-        if row0 == row1:
-            # one row: fill across from the leftmost cell
-            source = str(table.index(row0, col0).data(Qt.ItemDataRole.EditRole) or "")
-            for cell in cells:
-                if cell.column() != col0:
-                    step = cell.column() - col0
-                    text = _sub_text(source, step) if increment else source
-                    table.setData(cell, text)
-        else:
-            # fill each column down from its top selected cell
-            for column in sorted({c.column() for c in cells}):
-                column_cells = [c for c in cells if c.column() == column]
-                top = min(c.row() for c in column_cells)
-                source = str(
-                    table.index(top, column).data(Qt.ItemDataRole.EditRole) or ""
-                )
-                for cell in column_cells:
-                    if cell.row() != top:
-                        step = cell.row() - top
-                        text = _sub_text(source, step) if increment else source
-                        table.setData(cell, text)
-        stack.endMacro()
-
-    def insert_row(self, under: bool = False) -> None:
-        table = self.table()
-        if table is None or not table.editable:
-            return
-        cells, row0, _, row1, _ = self._bounds()
-        if cells:
-            count = row1 - row0 + 1
-            row = row1 + 1 if under else row0
-        else:
-            count = 1
-            row = table.rowCount() if under else 0
-        created = table.insert_rows(row, count)
-        first = table.row_of(created[0]) if created else None
-        if first is not None:
-            self.selectRow(first)
-
-    def remove_rows(self) -> None:
-        table = self.table()
-        cells = self.selectedIndexes()
-        if table is not None and cells:
-            table.remove_rows([c.row() for c in cells])
 
 
 class TextDialog(QWidget):
@@ -278,6 +78,8 @@ class MainWindow(QMainWindow):
         self.tables: dict[str, EntityTableModel] = {}
         self.type_name: str | None = None
         self.problems: list[Problem] = []
+        # the entity each problem was found on: positions change with edits
+        self._problem_entities: list[CommentedMap | None] = []
         self._dialogs: list[QWidget] = []
 
         self.table_view = TableView(self)
@@ -406,14 +208,17 @@ class MainWindow(QMainWindow):
 
     def _status(self, text: str) -> None:
         self.statusBar().showMessage(text)
-        QApplication.processEvents()
+        # Loading is synchronous: repaint so a slow fetch shows its progress,
+        # but take no clicks or keys, so no file action can re-enter it.
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
 
-    def load(self, target: Path | None) -> bool:
+    def load(self, target: Path | None, *, reload_catalogue: bool = False) -> bool:
         """Open a service dir, config dir or ioc.yaml; reload entities if needed."""
         try:
             instance = find_instance(target)
             same_image = (
-                self.model is not None
+                not reload_catalogue
+                and self.model is not None
                 and instance.image == self.instance.image
                 and instance.ioc_yaml is not None
                 and self.instance.ioc_yaml is not None
@@ -446,16 +251,22 @@ class MainWindow(QMainWindow):
     def set_document(
         self, instance: Instance, catalogue: Catalogue, document: Document
     ) -> None:
+        self.table_view.setModel(None)  # type: ignore[arg-type]
+        for table in self.tables.values():
+            table.deleteLater()
         if self.model is not None:
             self.model.deleteLater()
+        self.type_name = None
         self.instance = instance
         self.model = DocumentModel(document, catalogue)
+        self.model.setParent(self)
         self.model.stack.cleanChanged.connect(self._update_title)
+        self.model.structureChanged.connect(self._on_structure_problems)
+        self.model.valueChanged.connect(self._on_value_problems)
         self.model.structureChanged.connect(self._on_structure)
         self.undo_view.setStack(self.model.stack)
         self.tables = {}
-        self.problems = []
-        self.problem_list.clear()
+        self._set_problems([], [])
         self.dock_problems.hide()
         self._populate_components()
         self._on_structure()
@@ -602,38 +413,88 @@ class MainWindow(QMainWindow):
     def validate(self) -> list[Problem]:
         if self.model is None:
             return []
-        self.problems = validate(
+        problems = validate(
             self.model.document, self.model.catalogue, self.instance.name
         )
-        self.problem_list.clear()
         entities = self.model.document.entities
-        for problem in self.problems:
-            text = str(problem)
-            if problem.entity is not None and problem.entity < len(entities):
-                entity = entities[problem.entity]
-                text = f"{self.model.document.entity_type(entity)} {text}"
-            item = QListWidgetItem(text)
-            item.setData(Qt.ItemDataRole.UserRole, problem)
-            self.problem_list.addItem(item)
-        if not self.problems:
-            self.problem_list.addItem("No problems: ibek accepts this ioc.yaml")
+        found = [
+            entities[p.entity]
+            if p.entity is not None and p.entity < len(entities)
+            else None
+            for p in problems
+        ]
+        self._set_problems(problems, found)
+        self.dock_problems.setWindowTitle("Problems")
         self.dock_problems.show()
+        return self.problems
+
+    def _set_problems(
+        self, problems: list[Problem], entities: list[CommentedMap | None]
+    ) -> None:
+        """Show ``problems``, each tied to the entity object it was found on."""
+        self.problems = problems
+        self._problem_entities = entities
+        self._show_problems()
+
+    def _show_problems(self) -> None:
+        self.problem_list.clear()
+        if self.model is not None:
+            document = self.model.document
+            for problem, entity in zip(
+                self.problems, self._problem_entities, strict=True
+            ):
+                text = str(problem)
+                if entity is not None:
+                    # the entity's position now, not when validation ran
+                    problem.entity = document.index_of(entity)
+                    text = f"{document.entity_type(entity)} {problem}"
+                item = QListWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, problem)
+                self.problem_list.addItem(item)
+            if not self.problems:
+                self.problem_list.addItem("No problems: ibek accepts this ioc.yaml")
         for table in self.tables.values():
             self._apply_problems(table)
         self.table_view.viewport().update()
-        return self.problems
+
+    def _mark_stale(self) -> None:
+        if self.problems:
+            self.dock_problems.setWindowTitle(
+                "Problems (edited since validation: F5 to check again)"
+            )
+
+    def _on_value_problems(self, entity: object, key: str) -> None:
+        """An edited field may be fixed: drop its problems and keep the rest."""
+        if entity is None:
+            return
+        whole = key == COMMENTED  # a commented entity is no longer validated
+        keep = [
+            (p, e)
+            for p, e in zip(self.problems, self._problem_entities, strict=True)
+            if not (e is entity and (whole or p.field == key))
+        ]
+        self._set_problems([p for p, _ in keep], [e for _, e in keep])
+        self._mark_stale()
+
+    def _on_structure_problems(self) -> None:
+        """Drop problems of removed entities; the others follow their entity."""
+        if self.model is None:
+            return
+        present = {id(e) for e in self.model.document.entities}
+        keep = [
+            (p, e)
+            for p, e in zip(self.problems, self._problem_entities, strict=True)
+            if e is None or id(e) in present
+        ]
+        self._set_problems([p for p, _ in keep], [e for _, e in keep])
+        self._mark_stale()
 
     def _apply_problems(self, table: EntityTableModel) -> None:
         table.problems = {}
-        if self.model is None:
-            return
-        entities = self.model.document.entities
-        for problem in self.problems:
-            if problem.entity is None or problem.entity >= len(entities):
-                continue
-            entity = entities[problem.entity]
-            key = (id(entity), problem.field or "")
-            table.problems.setdefault(key, []).append(problem.message)
+        for problem, entity in zip(self.problems, self._problem_entities, strict=True):
+            if entity is not None:
+                key = (id(entity), problem.field or "")
+                table.problems.setdefault(key, []).append(problem.message)
         table.headerDataChanged.emit(
             Qt.Orientation.Vertical, 0, max(table.rowCount() - 1, 0)
         )
@@ -642,9 +503,12 @@ class MainWindow(QMainWindow):
         problem = item.data(Qt.ItemDataRole.UserRole)
         if self.model is None or not isinstance(problem, Problem):
             return
-        entities = self.model.document.entities
-        if problem.entity is not None and problem.entity < len(entities):
-            self.show_entity(entities[problem.entity], problem.field)
+        for candidate, entity in zip(
+            self.problems, self._problem_entities, strict=True
+        ):
+            if candidate is problem and entity is not None:
+                self.show_entity(entity, problem.field)
+                return
 
     # ------------------------------------------------------------- files
     def _update_title(self) -> None:
@@ -703,8 +567,7 @@ class MainWindow(QMainWindow):
     def reload(self) -> None:
         if self.instance.ioc_yaml is not None and self._prompt_unsaved():
             target = self.instance.service_dir or self.instance.ioc_yaml
-            self.model = None  # force the entities to be fetched again
-            self.load(target)
+            self.load(target, reload_catalogue=True)
 
     def save(self) -> bool:
         if self.model is None:

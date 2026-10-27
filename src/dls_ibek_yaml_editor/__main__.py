@@ -78,7 +78,15 @@ def edit(
 ) -> None:
     """Create or edit an ibek ioc.yaml with an xeb-like GUI."""
     if list_entities or validate:
-        _report(target, image, generic_ioc, defs, refresh, list_entities, validate)
+        from ruamel.yaml.error import YAMLError
+
+        from .image import ImageError
+
+        try:
+            _report(target, image, generic_ioc, defs, refresh, list_entities, validate)
+        except (OSError, ValueError, YAMLError, ImageError) as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
         return
 
     try:

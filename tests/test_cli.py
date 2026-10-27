@@ -41,3 +41,16 @@ def test_validate_bad(service: Path, capsys: pytest.CaptureFixture[str]):
         main([str(service), "--defs", str(DEFS), "--validate"])
     assert exit_info.value.code == 1
     assert "object X not found" in capsys.readouterr().out
+
+
+def test_validate_malformed_entities_fails_without_rewriting(
+    service: Path, capsys: pytest.CaptureFixture[str]
+):
+    path = service / "config" / "ioc.yaml"
+    original = "entities: {type: epics.EpicsEnvSet}\n"
+    path.write_text(original)
+    with pytest.raises(SystemExit) as exit_info:
+        main([str(service), "--defs", str(DEFS), "--validate"])
+    assert exit_info.value.code == 1
+    assert "entities must be a YAML sequence" in capsys.readouterr().err
+    assert path.read_text() == original

@@ -11,8 +11,8 @@ You point it at an IOC service directory, for example
 `deb-services/services/fe99i-mo-ioc-01`. The tool reads the generic IOC image
 pinned in that directory's `values.yaml`. It then fetches that image's
 `/epics/ibek-defs` straight from the container registry. You don't need docker,
-podman or a local checkout. The download is cached, so it happens once per
-image tag. Those definitions include the modules inherited from the base image
+podman or a local checkout. The definitions are cached for reuse on later runs.
+Those definitions include the modules inherited from the base image
 (asyn, iocStats, autosave, …). So the editor offers exactly the entities that
 version of the generic IOC can instantiate.
 
@@ -22,10 +22,13 @@ Source          | <https://github.com/DiamondLightSource/dls-ibek-yaml-editor>
 PyPI            | `pip install dls-ibek-yaml-editor`
 Releases        | <https://github.com/DiamondLightSource/dls-ibek-yaml-editor/releases>
 Code structure  | [docs/architecture.md](docs/architecture.md)
+Development and testing | [docs/development.md](docs/development.md)
 
 ## Usage
 
-```
+Requires Python 3.13 or later and a desktop environment that can run Qt.
+
+```sh
 uvx dls-ibek-yaml-editor services/fe99i-mo-ioc-01            # edit, or create a new instance
 uvx dls-ibek-yaml-editor services/fe99i-mo-ioc-01 --validate # check it with ibek
 uvx dls-ibek-yaml-editor services/fe99i-mo-ioc-01 --list-entities
@@ -39,8 +42,13 @@ The argument can be any of these:
 
 If a service directory has no `config/ioc.yaml` yet, the tool starts a new
 instance and writes the file on the first save. The new file's `$schema`
-header points at the schema published for the pinned image tag, so VS Code
-can validate the file outside the container.
+header points at the schema published for the pinned image tag when a schema
+URL can be derived from it, so VS Code can validate the file outside the
+container. Services using `compose.yml` or `compose.yaml` are also recognised.
+
+`--validate` and `--list-entities` run without opening a window or requiring a
+display. Validation exits with status 0 on success and 1 if there are problems
+or the IOC file is missing.
 
 These options change where the entities come from:
 
@@ -51,7 +59,11 @@ Option                | Entities come from
 `--generic-ioc PATH`  | a local generic IOC checkout, for an unreleased version: its Dockerfile's support modules, plus the base image's from the registry. A warning is shown if the checkout's tag differs from `values.yaml`.
 `--defs DIR`          | a folder of `*.ibek.support.yaml`
 
-The instance's own `config/*.ibek.support.yaml` are always added on top.
+If combined, `--defs` takes priority over `--generic-ioc`, which takes priority
+over the image. Support files beside the target `ioc.yaml` (normally
+`config/*.ibek.support.yaml`) are always added on top. A local definition
+replaces the whole module with the same name. Invalid support files and
+missing definition directories are reported as errors.
 
 ## The window
 
@@ -67,8 +79,9 @@ Inside the table:
 - Defaults are shown in grey italics and are not written to the file.
 - Required cells that are empty are red. Bold column headers are required
   parameters.
-- Enums and booleans are edited with drop-downs. Object references offer the
-  ids defined in the file.
+- Enums and booleans are edited with editable drop-downs, so Jinja values
+  can be retained. Object references offer the ids of active entities in the
+  file.
 - The first column, **X**, comments a row out, as in xeb. The entity is saved
   as a commented-out block (`  # - type: …`), as VS Code's Ctrl+/ would write
   it, and blocks like that in an existing file open as X rows. ibek ignores a
@@ -91,22 +104,51 @@ a whole table. Drag a row header to reorder entities within a table. If a file
 interleaves types, it is grouped by type when it is opened. That step can be
 undone, and nothing is written until you save. ibek needs an entity to come
 before anything that refers to its id, and validation reports a reference that
-comes too early.
+comes too early. This check applies to object references; plain string links,
+such as some `port` parameters, are not checked.
 
 **Tools > Validate** (F5) checks the file with ibek's own model. It runs again
 on every save, and the problems are listed and highlighted in the tables.
+Editing clears the previous results; press F5 to check again. If validation
+finds problems when saving, you can cancel or choose **Save anyway**.
 
-Saving changes only the lines you edited. Comments, quoting and Jinja are kept.
+Dictionary and list parameters accept YAML or JSON in the cell, and are shown
+as YAML flow text, such as `{when: 2026-10-27, n: 1}`. Clipboard text
+uses quoted tab-separated values for spreadsheets; backslashes stay literal.
+Clearing a cell removes its key. Existing null and empty-string values are
+preserved until edited. Types missing from the definitions have read-only cells.
+
+Saving retains comments, quoting and Jinja text, but serialises the whole
+document, so spacing and indentation may change. Commented entities stay
+commented out. Invalid entity collections are rejected when opening a file.
+The file is replaced only after a complete temporary copy has been written.
+Existing symlinks are followed and file permissions retained; new files get
+the usual permissions for your umask (0664 with umask 002). A file owned by
+someone else, or in a directory you can't create files in, is rewritten in
+place instead, so its owner doesn't change.
 
 ## Registry access
 
-Images are pulled anonymously. If a registry needs credentials, they are read
-from `~/.docker/config.json` (`docker login`) or from `CI_REGISTRY_*`. Fetched
-definitions are cached in `~/.cache/dls-ibek-yaml-editor`, or wherever
+Public images can be fetched anonymously. For private registries, credentials
+are read from inline `auth` entries in `~/.docker/config.json` (or
+`$DOCKER_CONFIG/config.json`), then from matching `CI_REGISTRY`,
+`CI_REGISTRY_USER` and `CI_REGISTRY_PASSWORD`. Docker credential helpers are
+not supported.
+
+Fetched definitions are cached in `~/.cache/dls-ibek-yaml-editor`, or wherever
 `DLS_IBEK_YAML_EDITOR_CACHE` points. A cached tag is used without contacting
 the registry, so later runs start at once and work offline. Pass `--refresh`
 to check the registry for an image rebuilt under the same tag (`latest` is
-always checked).
+always checked). If a refresh fails, an existing valid cache is used with a
+message explaining why.
+
+For an epics-containers runtime image, the first fetch reads only the start of
+the layer that holds `/epics`, which is quick. Other images, or one whose
+definitions link into a lower layer, have every layer read and merged, which
+downloads the whole image once. Refreshes keep older cache snapshots so open
+documents can still use them. To reclaim space, close the editor and remove
+its cache directory; the next run fetches definitions again. Caches written by
+older editor versions are still used.
 
 With no target, `--image`, `--generic-ioc` or `--defs` open an untitled
 instance using those entities; Save asks where to write it.
