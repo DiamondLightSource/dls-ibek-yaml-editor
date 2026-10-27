@@ -1,7 +1,7 @@
-"""An ``ioc.yaml`` held as round-trip YAML, so saving changes only what was edited.
+"""An ``ioc.yaml`` held as round-trip YAML to retain comments and scalar styles.
 
 Comments, quoting, Jinja strings and the ``# yaml-language-server`` header all
-survive a load/save cycle unchanged.
+are retained where the YAML emitter permits; formatting may be normalised.
 
 A commented-out entity, as VS Code's Ctrl+/ writes it::
 
@@ -16,15 +16,23 @@ from __future__ import annotations
 
 import io
 import json
-import re
 from pathlib import Path
 from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
-from ruamel.yaml.tokens import CommentToken
+from ruamel.yaml.error import YAMLError
 
 from .catalogue import Catalogue, EntityType, Param
+from .file_io import atomic_write_text
+from .yaml_format import (
+    ENTITY_INDENT,
+    comment_entities,
+    is_blank,
+    last_token,
+    normalise_separators,
+    uncomment_entities,
+)
 
 __all__ = ["COMMENTED", "MISSING", "Document", "new_ioc_text", "text_to_value"]
 
@@ -39,7 +47,7 @@ class _Missing:
         return "MISSING"
 
 
-MISSING: Any = _Missing()
+MISSING = _Missing()
 
 
 def _yaml() -> YAML:
@@ -83,129 +91,23 @@ def text_to_value(text: str, param: Param | None) -> Any:
         if text.lower() in ("false", "no", "0"):
             return False
         return text
+    if kind in ("dict", "list") and not text.lstrip().startswith("{{"):
+        try:
+            value = YAML(typ="safe").load(text)
+        except YAMLError:  # malformed YAML remains editable for ibek to diagnose
+            return text
+        expected = dict if kind == "dict" else list
+        if isinstance(value, expected):
+            return value
     return text
 
 
 def value_to_text(value: Any) -> str:
     if value is MISSING or value is None:
         return ""
-    if isinstance(value, bool):
-        return str(value)
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
     return str(value)
-
-
-# "  # - type: x": a commented-out entity's first line; group 1 is its prefix
-_COMMENTED_START = re.compile(r"^( *# ?)- type:\s*\S")
-_ITEM_START = re.compile(r"^( *)- ")
-
-
-def _indent(line: str) -> int:
-    return len(line) - len(line.lstrip(" "))
-
-
-def _entities_section(lines: list[str]) -> tuple[int, int]:
-    """The line range after ``entities:``, up to the next top-level key."""
-    starts = [n for n, line in enumerate(lines) if re.match(r"^entities\s*:", line)]
-    if not starts:
-        return len(lines), len(lines)
-    start = starts[0]
-    end = start + 1
-    while end < len(lines) and not re.match(r"^[^\s#]", lines[end]):
-        end += 1
-    return start + 1, end
-
-
-def _parses_as_entity(lines: list[str]) -> bool:
-    try:
-        data = YAML(typ="safe").load("".join(lines))
-    except Exception:
-        return False
-    return (
-        isinstance(data, list)
-        and len(data) == 1
-        and isinstance(data[0], dict)
-        and isinstance(data[0].get("type"), str)
-    )
-
-
-def uncomment_entities(text: str) -> tuple[str, str, dict[int, str]]:
-    """Uncomment the commented-out entities in ``text``.
-
-    Returns the new text, the indent of the entity items, and the position in
-    ``entities`` of each uncommented entity with its comment prefix. A comment
-    that isn't a whole entity is left alone.
-    """
-    lines = text.splitlines(keepends=True)
-    start, end = _entities_section(lines)
-    section = lines[start:end]
-    items = [m.group(1) for line in section if (m := _ITEM_START.match(line))]
-    indent = items[0] if items else "  "
-    result: list[str] = []
-    commented: dict[int, str] = {}
-    count = 0
-    i = 0
-    while i < len(section):
-        line = section[i]
-        match = _COMMENTED_START.match(line)
-        if match:
-            prefix = match.group(1)
-            block = [line[len(prefix) :]]
-            j = i + 1
-            while j < len(section):
-                rest = section[j][len(prefix) :]
-                if not section[j].startswith(prefix) or not rest.startswith(" "):
-                    break
-                block.append(rest)
-                j += 1
-            if _parses_as_entity(block):
-                commented[count] = prefix
-                count += 1
-                result.extend(indent + part for part in block)
-                i = j
-                continue
-        if line.startswith(indent + "- "):
-            count += 1
-        result.append(line)
-        i += 1
-    return "".join(lines[:start] + result + lines[end:]), indent, commented
-
-
-def comment_entities(text: str, indent: str, prefixes: dict[int, str]) -> str:
-    """Comment out the entities at the positions in ``prefixes``."""
-    lines = text.splitlines(keepends=True)
-    start, end = _entities_section(lines)
-    count = -1
-    prefix: str | None = None
-    block: list[int] = []
-
-    def close() -> None:
-        while block and not lines[block[-1]].strip():
-            block.pop()  # the blank separator after the entity
-        for n in block:
-            line = lines[n]
-            if line.strip():
-                lines[n] = prefix + line[len(indent) :] if prefix else line
-            else:
-                lines[n] = (prefix or "").rstrip() + line.lstrip(" ")
-        block.clear()
-
-    for n in range(start, end):
-        line = lines[n]
-        if line.startswith(indent + "- "):
-            close()
-            count += 1
-            prefix = prefixes.get(count)
-        elif line.strip() and _indent(line) <= len(indent):
-            close()  # a comment between entities, or past the last one
-            prefix = None
-        if prefix is not None:
-            block.append(n)
-    close()
-    return "".join(lines)
-
-
-def _is_blank(token: Any) -> bool:
-    return isinstance(token, CommentToken) and token.value.strip() == ""
 
 
 class Document:
@@ -220,9 +122,23 @@ class Document:
             raise ValueError(f"{path or 'ioc.yaml'} is not a YAML mapping")
         self.data: CommentedMap = data
         entities = data.get("entities")
-        if not isinstance(entities, CommentedSeq):
+        if entities is None:
             entities = CommentedSeq()
             data["entities"] = entities
+        if not isinstance(entities, CommentedSeq):
+            raise ValueError(
+                "entities must be a YAML sequence (or null for an empty IOC)"
+            )
+        for index, entity in enumerate(entities):
+            if not isinstance(entity, CommentedMap):
+                raise ValueError(f"entity {index + 1} must be a YAML mapping")
+            if not isinstance(entity.get("type"), str) or not entity["type"].strip():
+                raise ValueError(
+                    f"entity {index + 1} must have a non-empty string type"
+                )
+        for key in ("ioc_name", "description"):
+            if key in data and not isinstance(data[key], str):
+                raise ValueError(f"{key} must be a string")
         entities.fa.set_block_style()
         # commented-out entities, by id(), with their comment prefix
         self._commented: dict[int, tuple[CommentedMap, str]] = {
@@ -232,11 +148,11 @@ class Document:
         }
         # blank lines between entities: keep whatever the file did
         self.separated = any(
-            _is_blank(_last_token(e)) for e in entities[:-1] if isinstance(e, dict)
+            is_blank(last_token(e)) for e in entities[:-1] if isinstance(e, dict)
         )
         if len(entities) < 2:
             self.separated = True
-        self.trailing_blank = bool(entities) and _is_blank(_last_token(entities[-1]))
+        self.trailing_blank = bool(entities) and is_blank(last_token(entities[-1]))
 
     # ------------------------------------------------------------------ io
     @classmethod
@@ -250,7 +166,7 @@ class Document:
         return cls(new_ioc_text(schema_url, description), path)
 
     def dumps(self) -> str:
-        self._normalise_separators()
+        normalise_separators(self.entities, self.separated, self.trailing_blank)
         stream = io.StringIO()
         self._yaml.dump(self.data, stream)
         prefixes = {
@@ -258,41 +174,14 @@ class Document:
             for i, e in enumerate(self.entities)
             if id(e) in self._commented
         }
-        return comment_entities(stream.getvalue(), self.indent, prefixes)
+        return comment_entities(stream.getvalue(), ENTITY_INDENT, prefixes)
 
     def save(self, path: Path | None = None) -> None:
         path = path or self.path
         if path is None:
             raise ValueError("no file name")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.dumps())
+        atomic_write_text(path, self.dumps())
         self.path = path
-
-    def _normalise_separators(self) -> None:
-        """Keep the blank lines between entities after the last key of each.
-
-        ruamel attaches a blank line to the key before it, so a key added to
-        the end of an entity, or a moved entity, would otherwise carry its
-        separator to the wrong place. Untouched files come out unchanged.
-        """
-        entities = self.entities
-        final = len(entities) - 1
-        for position, entity in enumerate(entities):
-            if not isinstance(entity, CommentedMap) or not entity:
-                continue
-            keys = list(entity.keys())
-            for key in keys[:-1]:
-                tokens = entity.ca.items.get(key)
-                if tokens and len(tokens) > 2 and _is_blank(tokens[2]):
-                    tokens[2] = None
-            last = entity.ca.items.setdefault(keys[-1], [None, None, None, None])
-            blank = _is_blank(last[2])
-            if last[2] is not None and not blank:
-                continue  # a comment before the next entity: keep it
-            if position < final and self.separated and not blank:
-                last[2] = CommentToken("\n\n", _mark(), None)
-            elif position == final and blank and not self.trailing_blank:
-                last[2] = None
 
     # ------------------------------------------------------------- content
     @property
@@ -416,16 +305,3 @@ def new_entity(full_name: str) -> CommentedMap:
     entity = CommentedMap()
     entity["type"] = full_name
     return entity
-
-
-def _last_token(entity: Any) -> Any:
-    if not isinstance(entity, CommentedMap) or not entity:
-        return None
-    tokens = entity.ca.items.get(list(entity.keys())[-1])
-    return tokens[2] if tokens and len(tokens) > 2 else None
-
-
-def _mark() -> Any:
-    from ruamel.yaml.error import CommentMark
-
-    return CommentMark(0)

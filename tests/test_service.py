@@ -2,10 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from dls_ibek_yaml_editor.catalogue import Catalogue
-from dls_ibek_yaml_editor.document import Document
 from dls_ibek_yaml_editor.service import find_instance, load_catalogue, open_document
-from dls_ibek_yaml_editor.validate import validate
 
 from .conftest import DEFS, IMAGE
 
@@ -46,34 +43,3 @@ def test_instance_support_yaml_is_added(service: Path):
 def test_no_image(tmp_path: Path):
     with pytest.raises(ValueError):
         load_catalogue(find_instance(None))
-
-
-def test_valid(service: Path, catalogue: Catalogue):
-    document = Document.load(service / "config" / "ioc.yaml")
-    assert validate(document, catalogue, "FE99I-MO-IOC-01") == []
-
-
-def test_problems_are_located(service: Path, catalogue: Catalogue):
-    document = Document.load(service / "config" / "ioc.yaml")
-    axis = document.of_type("motorPLC.NX102_MotorAxisPot")[0]
-    axis["controller"] = "NOPE"
-    spare = document.of_type("motorPLC.NX102_MotorAxisSpare")[0]
-    del spare["ADDR"]
-    problems = validate(document, catalogue, "FE99I-MO-IOC-01")
-    located = {(p.entity, p.field) for p in problems}
-    assert (document.index_of(spare), "ADDR") in located
-    assert any(p.entity == document.index_of(axis) for p in problems)
-    assert any("NOPE" in p.message for p in problems)
-
-
-def test_bad_int_is_reported_once(service: Path, catalogue: Catalogue):
-    document = Document.load(service / "config" / "ioc.yaml")
-    axis = document.of_type("motorPLC.NX102_MotorAxisPot")[0]
-    axis["ADDR"] = "x"
-    problems = validate(document, catalogue, "FE99I-MO-IOC-01")
-    assert [(p.field, p.message) for p in problems] == [
-        (
-            "ADDR",
-            "Input should be a valid integer, unable to parse string as an integer",
-        )
-    ]

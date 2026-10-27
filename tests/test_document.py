@@ -1,6 +1,8 @@
 import difflib
 from pathlib import Path
 
+import pytest
+
 from dls_ibek_yaml_editor.catalogue import Catalogue
 from dls_ibek_yaml_editor.document import MISSING, Document, new_entity, text_to_value
 from dls_ibek_yaml_editor.validate import validate
@@ -167,3 +169,102 @@ def test_comment_between_entities_is_kept():
         1,
     )
     assert Document(text).dumps() == text
+
+
+@pytest.mark.parametrize("indent", [0, 1, 2, 4, 6])
+@pytest.mark.parametrize("all_commented", [False, True])
+def test_comment_state_survives_indentation(indent: int, all_commented: bool):
+    prefix = " " * indent
+    first = "# " if all_commented else ""
+    text = (
+        "ioc_name: test\ndescription: test\nentities:\n"
+        f"{prefix}{first}- type: epics.EpicsEnvSet\n"
+        f"{prefix}{first}  name: A\n{prefix}{first}  value: a\n"
+        f"{prefix}# - type: epics.EpicsEnvSet\n"
+        f"{prefix}#   name: B\n{prefix}#   value: b\n"
+    )
+    document = Document(text)
+    assert len(document.entities) == 2
+    for _ in range(2):
+        document = Document(document.dumps())
+        assert [document.is_commented(e) for e in document.entities] == [
+            all_commented,
+            True,
+        ]
+        assert [e["name"] for e in document.entities] == ["A", "B"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "{type: epics.EpicsEnvSet}",
+        "oops",
+        "42",
+        "false",
+        "[null]",
+        "[3]",
+        "[{}]",
+        "[{type: 5}]",
+    ],
+)
+def test_invalid_entities_are_rejected_without_changing_file(
+    tmp_path: Path, value: str
+):
+    path = tmp_path / "ioc.yaml"
+    original = f"ioc_name: test\nentities: {value}\n"
+    path.write_text(original)
+    with pytest.raises(ValueError, match="entit"):
+        Document.load(path)
+    assert path.read_text() == original
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ioc_name: test\n",
+        "ioc_name: test\nentities:\n",
+        "ioc_name: test\nentities: []\n",
+    ],
+)
+def test_empty_document_shapes(text: str):
+    assert list(Document(text).entities) == []
+
+
+@pytest.mark.parametrize("key", ["ioc_name", "description"])
+def test_header_values_must_be_strings(key: str):
+    with pytest.raises(ValueError, match=key):
+        Document(f"{key}: []\nentities: []\n")
+
+
+def test_nested_values_and_multiline_comments():
+    text = (
+        'ioc_name: test\ndescription: "quoted"\nentities:\n'
+        "  - type: test.Nested\n    values: &values [1, 2]\n"
+        "    other: *values\n    script: |\n      line one\n      line two\n"
+        "\n  # note between entities\n  - type: test.Next\n    name: next\n"
+    )
+    document = Document(text)
+    first = document.entities[0]
+    document.set_commented(first, True)
+    saved = document.dumps()
+    reopened = Document(saved)
+    assert reopened.is_commented(reopened.entities[0])
+    assert reopened.entities[0]["script"] == "line one\nline two\n"
+    assert reopened.entities[0]["values"] == [1, 2]
+    assert "# note between entities" in saved
+    assert "&values" in saved and "*values" in saved
+
+
+@pytest.mark.parametrize(
+    "kind,text,expected",
+    [
+        ("dict", '{"x": [1, true]}', {"x": [1, True]}),
+        ("list", '[1, "x"]', [1, "x"]),
+        ("dict", "{{ values }}", "{{ values }}"),
+        ("list", "[broken", "[broken"),
+    ],
+)
+def test_structured_values(kind: str, text: str, expected: object):
+    from dls_ibek_yaml_editor.catalogue import Param
+
+    assert text_to_value(text, Param("value", kind, "")) == expected
