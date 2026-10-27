@@ -27,7 +27,7 @@ import truststore
 from ibek.pattern_cmds.schema import parse_image_ref, published_schema_url
 
 from .file_io import atomic_write_text
-from .image_layers import DEFS_DIR, DefinitionLayers
+from .image_layers import DEFS_DIR, DefinitionLayers, LayerError
 
 __all__ = [
     "DEFS_DIR",
@@ -241,6 +241,67 @@ class Registry:
         raise ImageError(f"{self.ref.image}: nested image index")
 
 
+# ``COPY --from=runtime_prep /assets /`` as image history records it
+_ASSETS_STEP = re.compile(r"\bCOPY\b.*\s/assets\s+/(\s|$)")
+
+
+def _assets_layer(registry: Registry, manifest: dict[str, Any]) -> str | None:
+    """The layer an epics-containers runtime image copied ``/assets`` into.
+
+    Image history has one entry per build step; those without ``empty_layer``
+    correspond, in order, to the manifest's layers.
+    """
+    try:
+        with registry.get(f"blobs/{manifest['config']['digest']}") as response:
+            config = json.loads(response.read())
+        layers = [layer["digest"] for layer in manifest.get("layers", [])]
+        steps = [h for h in config.get("history", []) if not h.get("empty_layer")]
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        return None
+    if len(steps) != len(layers):
+        return None
+    matches = [
+        digest
+        for digest, step in zip(layers, steps, strict=True)
+        if _ASSETS_STEP.search(str(step.get("created_by", "")))
+    ]
+    return matches[-1] if matches else None
+
+
+def _read_definitions(
+    registry: Registry,
+    manifest: dict[str, Any],
+    destination: Path,
+    log: Callable[[str], None],
+) -> list[str]:
+    """Write the image's definitions into ``destination``; return their names.
+
+    epics-containers runtime images get all of ``/epics`` from one layer:
+    ``ibek ioc extract-runtime-assets`` gathers the developer stage's whole
+    ``/epics``, inherited modules included, into ``/assets``, and the runtime
+    stage copies that over its base. When the history shows that step, only
+    the head of that layer is read, as far as the definitions folder. If its
+    definitions are incomplete (a link into a lower layer, say), or the image
+    doesn't follow the convention, every layer is merged, oldest first.
+    """
+    assets = _assets_layer(registry, manifest)
+    if assets is not None:
+        layers = DefinitionLayers()
+        try:
+            with registry.get(f"blobs/{assets}") as response:
+                layers.apply(response, stop_when_complete=True)
+            return layers.write(destination)
+        except LayerError as exc:
+            log(f"The /assets layer is incomplete ({exc}); reading every layer")
+            for path in destination.iterdir():
+                path.unlink()
+    layers = DefinitionLayers()
+    for layer in manifest.get("layers", []):
+        with registry.get(f"blobs/{layer['digest']}") as response:
+            layers.apply(response)
+    return layers.write(destination)
+
+
 def _read_meta(cache: Path, legacy: bool = False) -> dict[str, Any] | None:
     """The metadata of a complete cache folder, or None.
 
@@ -319,11 +380,7 @@ def fetch_ibek_defs(
         tmp = Path(tempfile.mkdtemp(dir=root, prefix="snapshot-"))
         published = False
         try:
-            layers = DefinitionLayers()
-            for layer in manifest.get("layers", []):
-                with registry.get(f"blobs/{layer['digest']}") as response:
-                    layers.apply(response)
-            found = layers.write(tmp)
+            found = _read_definitions(registry, manifest, tmp, log)
             (tmp / ".meta.json").write_text(
                 json.dumps(
                     {

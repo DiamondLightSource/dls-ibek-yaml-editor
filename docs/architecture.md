@@ -78,15 +78,28 @@ workstation that can't reach the registry, the checkout's own modules are still
 offered and a warning names the missing base image. That catalogue is partial,
 but it says so. Invalid definitions are still an error.
 
-The registry client chooses linux/amd64 from a multi-platform index. It scans
-layers oldest first, retaining support YAML and links in memory. Whiteouts and
-opaque directories remove lower-layer entries; newer files replace older ones.
-Relative link targets are normalised as container paths. Unresolved definition
-links, link cycles, and a symlinked definitions directory produce errors.
+The registry client chooses linux/amd64 from a multi-platform index. It then
+reads the definitions in one of two ways:
 
-Full layer scans cost more on the first fetch than the previous shortcut of
-reading one layer. No arbitrary archive paths are extracted to the host; only
-resolved support YAML is written to the cache.
+- **The `/assets` layer alone (fast path).** In an epics-containers runtime
+  image, `ibek ioc extract-runtime-assets` gathers the developer stage's whole
+  `/epics`, inherited modules included, and the runtime stage copies it in one
+  `COPY --from=runtime_prep /assets /` step. When the image history shows that
+  step, only that layer is read, and only until the definitions folder has gone
+  by and every definition resolves. That is typically a small part of a large
+  layer.
+- **Every layer, merged (fallback).** If the history doesn't show that step,
+  or the `/assets` layer's definitions are incomplete (for example a link into
+  a lower layer), every layer is read oldest first, retaining support YAML and
+  links in memory. Whiteouts and opaque directories remove lower-layer entries;
+  newer files replace older ones. This downloads the whole image once.
+
+The fast path relies on the convention that lower layers add no definitions
+missing from `/assets`. That holds for images built from the epics-containers
+templates. Relative link targets are normalised as container paths. Unresolved
+definition links, link cycles, and a symlinked definitions directory produce
+errors. No arbitrary archive paths are extracted to the host; only resolved
+support YAML is written to the cache.
 
 Each image/tag has immutable snapshot directories and a `.current` pointer.
 After a snapshot is complete, an atomic write switches the pointer. A failed

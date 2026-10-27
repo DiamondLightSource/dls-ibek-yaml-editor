@@ -75,10 +75,19 @@ class FakeResponse(io.BytesIO):
         self.headers = headers or {}
 
 
+ASSETS_STEP = "COPY /assets / # buildkit"
+
+
 def _fake_registry(
-    monkeypatch: pytest.MonkeyPatch, blobs: dict[str, bytes]
+    monkeypatch: pytest.MonkeyPatch,
+    blobs: dict[str, bytes],
+    top_step: str = ASSETS_STEP,
 ) -> list[str]:
-    """Serve a one-image registry; returns the list of requested paths."""
+    """Serve a one-image registry; returns the list of requested paths.
+
+    ``top_step`` is the history of the top layer. The default is the
+    epics-containers runtime convention, where it holds all of ``/epics``.
+    """
     requested: list[str] = []
     manifest = {
         "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -89,7 +98,7 @@ def _fake_registry(
         "history": [
             {"created_by": "FROM base"},
             {"created_by": "ARG X", "empty_layer": True},
-            {"created_by": "COPY /assets / # buildkit"},
+            {"created_by": top_step},
         ]
     }
 
@@ -124,8 +133,8 @@ def test_fetch_resolves_symlinks_and_caches(monkeypatch: pytest.MonkeyPatch):
     )
     defs = fetch_ibek_defs(IMAGE, log=lambda _: None)
     assert (defs / "motorPLC.ibek.support.yaml").read_bytes() == b"module: motorPLC\n"
-    # Base and derived layers both contribute to the final filesystem.
-    assert "blobs/sha256:base" in requested
+    # an epics-containers runtime image: only its /assets layer is read
+    assert "blobs/sha256:base" not in requested
 
     requested.clear()
     assert fetch_ibek_defs(IMAGE, log=lambda _: None) == defs
@@ -195,6 +204,10 @@ def test_docker_credentials_take_precedence(
     assert image._docker_credentials("registry.example") == "Basic docker-dummy"
 
 
+# an image that adds definitions on top of a base that already has some
+MERGED_STEP = "COPY defs /epics/ibek-defs/ # buildkit"
+
+
 def test_layers_merge_replace_delete_and_resolve_links(monkeypatch: pytest.MonkeyPatch):
     base = _layer(
         [
@@ -215,7 +228,9 @@ def test_layers_merge_replace_delete_and_resolve_links(monkeypatch: pytest.Monke
             ),
         ]
     )
-    _fake_registry(monkeypatch, {"sha256:base": base, "sha256:assets": assets})
+    _fake_registry(
+        monkeypatch, {"sha256:base": base, "sha256:assets": assets}, MERGED_STEP
+    )
     defs = fetch_ibek_defs(IMAGE, log=lambda _: None)
     assert {p.name: p.read_bytes() for p in defs.glob("*.yaml")} == {
         "base.ibek.support.yaml": b"base",
@@ -233,7 +248,9 @@ def test_opaque_directory_hides_lower_files(monkeypatch: pytest.MonkeyPatch):
             ("epics/ibek-defs/.wh..wh..opq", b""),
         ]
     )
-    _fake_registry(monkeypatch, {"sha256:base": base, "sha256:assets": assets})
+    _fake_registry(
+        monkeypatch, {"sha256:base": base, "sha256:assets": assets}, MERGED_STEP
+    )
     defs = fetch_ibek_defs(IMAGE, log=lambda _: None)
     assert [p.name for p in defs.glob("*.yaml")] == ["new.ibek.support.yaml"]
 
@@ -446,3 +463,62 @@ def test_incomplete_legacy_cache_is_ignored(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(image.Registry, "get", offline)
     with pytest.raises(image.ImageError):
         fetch_ibek_defs(IMAGE, log=lambda _: None)
+
+
+def test_assets_layer_stops_after_the_definitions(monkeypatch: pytest.MonkeyPatch):
+    read: list[str] = []
+
+    class Tracked(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            data = super().read(size)
+            read.append(f"{self.tell()}")
+            return data
+
+    big = os.urandom(512 * 1024)
+    assets = _layer(
+        [
+            ("epics/ibek-defs/a.ibek.support.yaml", b"module: a\n"),
+            ("epics/runtime/big.bin", big),
+        ]
+    )
+    base = _layer([("epics/ibek-defs/base.ibek.support.yaml", b"module: base\n")])
+    requested = _fake_registry(
+        monkeypatch, {"sha256:base": base, "sha256:assets": assets}
+    )
+    original = image.Registry.get
+
+    def get(self: Any, path: str, headers: Any = None) -> Any:
+        response = original(self, path, headers)
+        if path == "blobs/sha256:assets":
+            tracked = Tracked(response.getvalue())
+            tracked.headers = {}  # type: ignore[attr-defined]
+            return tracked
+        return response
+
+    monkeypatch.setattr(image.Registry, "get", get)
+    defs = fetch_ibek_defs(IMAGE, log=lambda _: None)
+    assert [p.name for p in defs.glob("*.yaml")] == ["a.ibek.support.yaml"]
+    assert "blobs/sha256:base" not in requested
+    assert max(int(n) for n in read) < len(assets)  # stopped before the end
+
+
+def test_incomplete_assets_layer_falls_back_to_merging(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    base = _layer([("epics/source/a.ibek.support.yaml", b"module: a\n")])
+    assets = _layer(
+        [
+            _link(
+                "epics/ibek-defs/a.ibek.support.yaml",
+                "/epics/source/a.ibek.support.yaml",
+            )
+        ]
+    )
+    requested = _fake_registry(
+        monkeypatch, {"sha256:base": base, "sha256:assets": assets}
+    )
+    messages: list[str] = []
+    defs = fetch_ibek_defs(IMAGE, log=messages.append)
+    assert (defs / "a.ibek.support.yaml").read_bytes() == b"module: a\n"
+    assert "blobs/sha256:base" in requested
+    assert any("reading every layer" in m for m in messages)

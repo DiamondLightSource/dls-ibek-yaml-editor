@@ -141,11 +141,13 @@ to check the registry for an image rebuilt under the same tag (`latest` is
 always checked). If a refresh fails, an existing valid cache is used with a
 message explaining why.
 
-The first fetch scans all image layers to include inherited definitions and
-respect replacements and deletions. Refreshes keep older cache snapshots so
-open documents can still use them. To reclaim space, close the editor and
-remove its cache directory; the next run fetches definitions again. Caches
-from older editor versions are rebuilt once.
+For an epics-containers runtime image, the first fetch reads only the start of
+the layer that holds `/epics`, which is quick. Other images, or one whose
+definitions link into a lower layer, have every layer read and merged, which
+downloads the whole image once. Refreshes keep older cache snapshots so open
+documents can still use them. To reclaim space, close the editor and remove
+its cache directory; the next run fetches definitions again. Caches written by
+older editor versions are still used.
 
 With no target, `--image`, `--generic-ioc` or `--defs` open an untitled
 instance using those entities; Save asks where to write it.
