@@ -159,8 +159,11 @@ even after failures. It captures stdout and suppresses deprecation warnings
 while invoking ibek. Stdout and warning handling still affect the process; use
 a separate process if validation must run alongside unrelated ibek operations.
 
-The Problems panel stores positions from the last validation. Edits clear
-these results and highlights, so navigation cannot use stale positions.
+Each problem in the Problems panel is tied to the entity object it was found
+on, not to a position, so it follows that entity through moves and inserts.
+Editing a field drops that field's problems, commenting an entity out or
+removing it drops all of its problems, and the rest stay visible. The panel
+title then says the results predate the edit; F5 validates again.
 
 ## Where to make a change
 

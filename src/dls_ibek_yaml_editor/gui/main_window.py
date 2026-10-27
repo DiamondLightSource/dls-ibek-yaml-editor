@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 from ruamel.yaml.comments import CommentedMap
 
 from ..catalogue import Catalogue
-from ..document import Document
+from ..document import COMMENTED, Document
 from ..service import Instance, find_instance, load_catalogue, open_document
 from ..validate import Problem, validate
 from .commands import DocumentModel
@@ -78,6 +78,8 @@ class MainWindow(QMainWindow):
         self.tables: dict[str, EntityTableModel] = {}
         self.type_name: str | None = None
         self.problems: list[Problem] = []
+        # the entity each problem was found on: positions change with edits
+        self._problem_entities: list[CommentedMap | None] = []
         self._dialogs: list[QWidget] = []
 
         self.table_view = TableView(self)
@@ -257,13 +259,12 @@ class MainWindow(QMainWindow):
         self.model = DocumentModel(document, catalogue)
         self.model.setParent(self)
         self.model.stack.cleanChanged.connect(self._update_title)
-        self.model.structureChanged.connect(self._clear_problems)
-        self.model.valueChanged.connect(self._clear_problems)
+        self.model.structureChanged.connect(self._on_structure_problems)
+        self.model.valueChanged.connect(self._on_value_problems)
         self.model.structureChanged.connect(self._on_structure)
         self.undo_view.setStack(self.model.stack)
         self.tables = {}
-        self.problems = []
-        self.problem_list.clear()
+        self._set_problems([], [])
         self.dock_problems.hide()
         self._populate_components()
         self._on_structure()
@@ -407,50 +408,91 @@ class MainWindow(QMainWindow):
         self.model.remove_table(name)
 
     # --------------------------------------------------------- validation
-    def _clear_problems(self) -> None:
-        """Results describe a snapshot; discard them after any document edit."""
-        self.problems = []
-        self.problem_list.clear()
-        self.dock_problems.hide()
-        for table in self.tables.values():
-            self._apply_problems(table)
-        self.table_view.viewport().update()
-
     def validate(self) -> list[Problem]:
         if self.model is None:
             return []
-        self.problems = validate(
+        problems = validate(
             self.model.document, self.model.catalogue, self.instance.name
         )
-        self.problem_list.clear()
         entities = self.model.document.entities
-        for problem in self.problems:
-            text = str(problem)
-            if problem.entity is not None and problem.entity < len(entities):
-                entity = entities[problem.entity]
-                text = f"{self.model.document.entity_type(entity)} {text}"
-            item = QListWidgetItem(text)
-            item.setData(Qt.ItemDataRole.UserRole, problem)
-            self.problem_list.addItem(item)
-        if not self.problems:
-            self.problem_list.addItem("No problems: ibek accepts this ioc.yaml")
+        found = [
+            entities[p.entity]
+            if p.entity is not None and p.entity < len(entities)
+            else None
+            for p in problems
+        ]
+        self._set_problems(problems, found)
+        self.dock_problems.setWindowTitle("Problems")
         self.dock_problems.show()
+        return self.problems
+
+    def _set_problems(
+        self, problems: list[Problem], entities: list[CommentedMap | None]
+    ) -> None:
+        """Show ``problems``, each tied to the entity object it was found on."""
+        self.problems = problems
+        self._problem_entities = entities
+        self._show_problems()
+
+    def _show_problems(self) -> None:
+        self.problem_list.clear()
+        if self.model is not None:
+            document = self.model.document
+            for problem, entity in zip(
+                self.problems, self._problem_entities, strict=True
+            ):
+                text = str(problem)
+                if entity is not None:
+                    # the entity's position now, not when validation ran
+                    problem.entity = document.index_of(entity)
+                    text = f"{document.entity_type(entity)} {problem}"
+                item = QListWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, problem)
+                self.problem_list.addItem(item)
+            if not self.problems:
+                self.problem_list.addItem("No problems: ibek accepts this ioc.yaml")
         for table in self.tables.values():
             self._apply_problems(table)
         self.table_view.viewport().update()
-        return self.problems
+
+    def _mark_stale(self) -> None:
+        if self.problems:
+            self.dock_problems.setWindowTitle(
+                "Problems (edited since validation: F5 to check again)"
+            )
+
+    def _on_value_problems(self, entity: object, key: str) -> None:
+        """An edited field may be fixed: drop its problems and keep the rest."""
+        if entity is None:
+            return
+        whole = key == COMMENTED  # a commented entity is no longer validated
+        keep = [
+            (p, e)
+            for p, e in zip(self.problems, self._problem_entities, strict=True)
+            if not (e is entity and (whole or p.field == key))
+        ]
+        self._set_problems([p for p, _ in keep], [e for _, e in keep])
+        self._mark_stale()
+
+    def _on_structure_problems(self) -> None:
+        """Drop problems of removed entities; the others follow their entity."""
+        if self.model is None:
+            return
+        present = {id(e) for e in self.model.document.entities}
+        keep = [
+            (p, e)
+            for p, e in zip(self.problems, self._problem_entities, strict=True)
+            if e is None or id(e) in present
+        ]
+        self._set_problems([p for p, _ in keep], [e for _, e in keep])
+        self._mark_stale()
 
     def _apply_problems(self, table: EntityTableModel) -> None:
         table.problems = {}
-        if self.model is None:
-            return
-        entities = self.model.document.entities
-        for problem in self.problems:
-            if problem.entity is None or problem.entity >= len(entities):
-                continue
-            entity = entities[problem.entity]
-            key = (id(entity), problem.field or "")
-            table.problems.setdefault(key, []).append(problem.message)
+        for problem, entity in zip(self.problems, self._problem_entities, strict=True):
+            if entity is not None:
+                key = (id(entity), problem.field or "")
+                table.problems.setdefault(key, []).append(problem.message)
         table.headerDataChanged.emit(
             Qt.Orientation.Vertical, 0, max(table.rowCount() - 1, 0)
         )
@@ -459,9 +501,12 @@ class MainWindow(QMainWindow):
         problem = item.data(Qt.ItemDataRole.UserRole)
         if self.model is None or not isinstance(problem, Problem):
             return
-        entities = self.model.document.entities
-        if problem.entity is not None and problem.entity < len(entities):
-            self.show_entity(entities[problem.entity], problem.field)
+        for candidate, entity in zip(
+            self.problems, self._problem_entities, strict=True
+        ):
+            if candidate is problem and entity is not None:
+                self.show_entity(entity, problem.field)
+                return
 
     # ------------------------------------------------------------- files
     def _update_title(self) -> None:

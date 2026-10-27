@@ -367,7 +367,7 @@ def test_failed_reload_keeps_document_usable(
 
 
 @pytest.mark.parametrize("change", ["move", "insert", "remove", "edit", "undo"])
-def test_edits_invalidate_problem_navigation(
+def test_problems_follow_their_entity_after_edits(
     window: MainWindow, service: Path, change: str
 ):
     assert window.load(service)
@@ -376,8 +376,10 @@ def test_edits_invalidate_problem_navigation(
     window.show_type("motorPLC.NX102_MotorAxisPot")
     table = window.table_view.table()
     assert table is not None
-    table.setData(table.index(0, _column(window, "ADDR")), "bad")
-    assert window.validate()
+    addr = _column(window, "ADDR")
+    bad = table.entity(0)
+    table.setData(table.index(0, addr), "bad")
+    assert len(window.validate()) == 1
     if change == "move":
         table.move_row(0, 1)
     elif change == "insert":
@@ -387,10 +389,33 @@ def test_edits_invalidate_problem_navigation(
     elif change == "undo":
         model.stack.undo()
     else:
-        table.setData(table.index(0, _column(window, "ADDR")), "1")
-    assert window.problems == []
-    assert window.problem_list.count() == 0
-    assert all(not t.problems for t in window.tables.values())
+        table.setData(table.index(0, addr), "1")
+    fixed = change in ("remove", "undo", "edit")
+    assert len(window.problems) == (0 if fixed else 1)
+    if not fixed:
+        # the problem stays on the same entity, wherever it now is
+        row = table.row_of(bad)
+        assert row is not None
+        assert table.index(row, addr).data(Qt.ItemDataRole.BackgroundRole)
+        assert window.problems[0].entity == model.document.index_of(bad)
+        window.table_view.clearSelection()
+        window._on_problem_clicked(window.problem_list.item(0))  # pyright: ignore[reportPrivateUsage]
+        assert window.table_view.currentIndex().row() == row
+        assert "F5" in window.dock_problems.windowTitle()
+
+
+def test_editing_one_field_keeps_other_problems(window: MainWindow, service: Path):
+    assert window.load(service)
+    window.show_type("motorPLC.NX102_MotorAxisPot")
+    table = window.table_view.table()
+    assert table is not None
+    table.setData(table.index(0, _column(window, "ADDR")), "bad")
+    table.setData(table.index(1, _column(window, "ADDR")), "bad")
+    assert len(window.validate()) == 2
+    table.setData(table.index(0, _column(window, "ADDR")), "1")
+    assert [p.entity for p in window.problems] == [
+        window.model.document.index_of(table.entity(1))  # type: ignore[union-attr]
+    ]
 
 
 def test_copy_paste_preserves_backslashes_and_control_characters(
