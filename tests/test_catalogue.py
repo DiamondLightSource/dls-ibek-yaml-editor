@@ -109,3 +109,30 @@ def test_missing_checkout_support_is_an_error(tmp_path: Path):
     )
     with pytest.raises(FileNotFoundError, match="support directory"):
         cat.from_generic_ioc(tmp_path)
+
+
+def test_generic_ioc_without_base_image_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "ioc-dlsmotorplc"
+    shutil.copy(DATA / "Dockerfile.dlsmotorplc", checkout.parent / "Dockerfile")
+    checkout.mkdir()
+    shutil.move(checkout.parent / "Dockerfile", checkout / "Dockerfile")
+    _, folders = parse_dockerfile(checkout / "Dockerfile")
+    for folder in folders:
+        (checkout / folder).mkdir(parents=True, exist_ok=True)
+    dls = checkout / "ibek-support-dls" / "motorPLC"
+    shutil.copy(DEFS / "motorPLC.ibek.support.yaml", dls)
+    base = tmp_path / "base"
+    base.mkdir()
+    shutil.copy(DEFS / "iocStats.ibek.support.yaml", base)
+
+    def offline(image: str, log: Any = print, refresh: bool = False) -> Path:
+        raise cat.ImageError(f"cannot read the manifest of {image}")
+
+    monkeypatch.setattr(cat, "fetch_ibek_defs", offline)
+    monkeypatch.setattr(cat, "git_describe", lambda _: None)
+    result = cat.from_generic_ioc(checkout, log=lambda _: None)
+    assert "motorPLC" in result.modules  # the checkout's own modules
+    assert "devIocStats" not in result.modules
+    assert any("base image" in w for w in result.warnings)

@@ -18,7 +18,7 @@ from ibek.parameters import Param as IbekParam
 from ibek.support import Support
 from ruamel.yaml import YAML
 
-from .image import ImageRef, cached_files, fetch_ibek_defs
+from .image import ImageError, ImageRef, cached_files, fetch_ibek_defs
 
 __all__ = [
     "Catalogue",
@@ -244,7 +244,20 @@ def from_generic_ioc(
     developer, folders = parse_dockerfile(dockerfile)
     if developer:
         runtime = ImageRef.parse(developer).with_target("runtime").image
-        catalogue.add_files(cached_files(fetch_ibek_defs(runtime, log, refresh)))
+        try:
+            base = fetch_ibek_defs(runtime, log, refresh)
+        except ImageError as exc:
+            # Unreachable registry, nothing cached: the checkout's own modules
+            # are still useful, and the warning dialog says what is missing.
+            # Invalid definitions, once fetched, are still an error.
+            message = (
+                f"base image {runtime} unavailable, so its modules "
+                f"(asyn, iocStats, ...) are missing: {exc}"
+            )
+            catalogue.warnings.append(message)
+            log(f"WARNING: {message}")
+        else:
+            catalogue.add_files(cached_files(base))
 
     epics = folder / "ibek-support" / "_ansible" / "epics.ibek.support.yaml"
     paths = [epics] if epics.is_file() else []

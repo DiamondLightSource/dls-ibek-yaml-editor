@@ -73,8 +73,10 @@ the current model.
 
 Checkout discovery recognises the project's `ARG DEVELOPER`, `COPY` and
 `RUN ansible.sh` conventions. It is a limited parser, not a Dockerfile build
-engine. Failure to fetch the base image is an error; the editor keeps the current
-document instead of opening a partial catalogue.
+engine. If the base image can't be fetched and isn't cached, for example on a
+workstation that can't reach the registry, the checkout's own modules are still
+offered and a warning names the missing base image. That catalogue is partial,
+but it says so. Invalid definitions are still an error.
 
 The registry client chooses linux/amd64 from a multi-platform index. It scans
 layers oldest first, retaining support YAML and links in memory. Whiteouts and
