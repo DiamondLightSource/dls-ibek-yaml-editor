@@ -26,6 +26,7 @@ class CellDelegate(QStyledItemDelegate):
         param = model.param(index.column())
         if param is not None and param.choices:
             combo = QComboBox(parent)
+            combo.setEditable(True)  # preserve Jinja and unlisted existing values
             combo.addItem("")
             combo.addItems(param.choices)
             combo.setToolTip("empty: use the default")
@@ -58,6 +59,11 @@ class CellDelegate(QStyledItemDelegate):
         self, editor: QWidget, model: QAbstractItemModel, index: Index
     ) -> None:
         if isinstance(editor, QComboBox):
-            model.setData(index, editor.currentText(), Qt.ItemDataRole.EditRole)
+            text = editor.currentText()
         elif isinstance(editor, QLineEdit):
-            model.setData(index, editor.text(), Qt.ItemDataRole.EditRole)
+            text = editor.text()
+        else:
+            return
+        # Merely opening an editor must preserve null, empty strings and styles.
+        if text != index.data(Qt.ItemDataRole.EditRole):
+            model.setData(index, text, Qt.ItemDataRole.EditRole)

@@ -34,7 +34,7 @@ ROOT = QModelIndex()
 
 class EntityTableModel(QAbstractTableModel):
     def __init__(self, model: DocumentModel, type_name: str):
-        super().__init__()
+        super().__init__(model)
         self.model = model
         self.type_name = type_name
         self.entity_type: EntityType | None = model.catalogue.get(type_name)

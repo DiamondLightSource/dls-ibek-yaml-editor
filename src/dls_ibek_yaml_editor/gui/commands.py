@@ -15,7 +15,6 @@ from ..document import (
     Document,
     new_entity,
     text_to_value,
-    value_to_text,
 )
 
 
@@ -62,7 +61,12 @@ class DocumentModel(QObject):
             return True
         value = text_to_value(text, param)
         current = self.document.get(entity, key)
-        if value_to_text(current) == value_to_text(value):
+        if (current is MISSING and value is MISSING) or (
+            current is not MISSING
+            and value is not MISSING
+            and current == value
+            and (isinstance(current, str) == isinstance(value, str))
+        ):
             return False  # unchanged: keep the original quoting
         self.stack.push(SetValue(self, entity, key, value))
         return True
@@ -212,9 +216,11 @@ class SetDescription(QUndoCommand):
 
     def redo(self) -> None:
         self.model.document.data["description"] = self.new_text
+        self.model.valueChanged.emit(None, "description")
 
     def undo(self) -> None:
         self.model.document.data["description"] = self.old
+        self.model.valueChanged.emit(None, "description")
 
 
 class Reorder(QUndoCommand):
