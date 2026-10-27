@@ -4,7 +4,13 @@ from pathlib import Path
 import pytest
 
 from dls_ibek_yaml_editor.catalogue import Catalogue
-from dls_ibek_yaml_editor.document import MISSING, Document, new_entity, text_to_value
+from dls_ibek_yaml_editor.document import (
+    MISSING,
+    Document,
+    new_entity,
+    text_to_value,
+    value_to_text,
+)
 from dls_ibek_yaml_editor.validate import validate
 
 from .conftest import SERVICE
@@ -268,3 +274,26 @@ def test_structured_values(kind: str, text: str, expected: object):
     from dls_ibek_yaml_editor.catalogue import Param
 
     assert text_to_value(text, Param("value", kind, "")) == expected
+
+
+@pytest.mark.parametrize(
+    "kind,text",
+    [
+        ("dict", "{when: 2026-10-27, n: 1}"),
+        ("dict", "{x: [1, true], s: 'a: b'}"),
+        ("list", "[2026-10-27, two]"),
+    ],
+)
+def test_structured_values_round_trip_through_cell(kind: str, text: str):
+    """Values JSON can't hold, such as dates, display and parse back unchanged."""
+    from dls_ibek_yaml_editor.catalogue import Param
+
+    param = Param("value", kind, "")
+    value = text_to_value(text, param)
+    assert value_to_text(value) == text
+    assert text_to_value(value_to_text(value), param) == value
+
+
+def test_structured_value_from_file_displays():
+    document = Document("entities:\n  - type: a.b\n    d: {when: 2026-10-27, n: 1}\n")
+    assert value_to_text(document.entities[0]["d"]) == "{when: 2026-10-27, n: 1}"

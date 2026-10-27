@@ -102,11 +102,29 @@ def text_to_value(text: str, param: Param | None) -> Any:
     return text
 
 
+def _plain(value: Any) -> Any:
+    """Copy ruamel containers to plain ones, so they dump in flow style."""
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain(item) for item in value]
+    return value
+
+
 def value_to_text(value: Any) -> str:
+    """A value as cell text; dicts and lists as YAML flow, as text_to_value reads."""
     if value is MISSING or value is None:
         return ""
     if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False)
+        yaml = YAML()
+        yaml.default_flow_style = True
+        yaml.width = 1 << 30
+        stream = io.StringIO()
+        try:
+            yaml.dump(_plain(value), stream)
+        except Exception:  # never let an odd value break painting the table
+            return str(value)
+        return stream.getvalue().strip()
     return str(value)
 
 

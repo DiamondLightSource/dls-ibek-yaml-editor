@@ -112,7 +112,8 @@ on every save, and the problems are listed and highlighted in the tables.
 Editing clears the previous results; press F5 to check again. If validation
 finds problems when saving, you can cancel or choose **Save anyway**.
 
-Dictionary and list parameters accept YAML or JSON in the cell. Clipboard text
+Dictionary and list parameters accept YAML or JSON in the cell, and are shown
+as YAML flow text, such as `{when: 2026-10-27, n: 1}`. Clipboard text
 uses quoted tab-separated values for spreadsheets; backslashes stay literal.
 Clearing a cell removes its key. Existing null and empty-string values are
 preserved until edited. Types missing from the definitions have read-only cells.
