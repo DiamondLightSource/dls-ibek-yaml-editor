@@ -98,13 +98,13 @@ def _report(
     list_entities: bool,
     validate: bool,
 ) -> None:
-    from .service import load_catalogue, open_document, resolve
+    from .service import find_instance, load_catalogue, open_document
     from .validate import validate as check
 
     def log(text: str) -> None:
         typer.echo(text, err=True)
 
-    instance = resolve(target)
+    instance = find_instance(target)
     catalogue = load_catalogue(
         instance, image, generic_ioc, defs, log=log, refresh=refresh
     )

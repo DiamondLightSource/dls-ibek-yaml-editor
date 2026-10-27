@@ -38,7 +38,7 @@ from ruamel.yaml.comments import CommentedMap
 
 from ..catalogue import Catalogue
 from ..document import COMMENTED, Document
-from ..service import Instance, load_catalogue, open_document, resolve
+from ..service import Instance, find_instance, load_catalogue, open_document
 from ..validate import Problem, validate
 from .commands import DocumentModel
 from .delegates import CellDelegate
@@ -411,7 +411,7 @@ class MainWindow(QMainWindow):
     def load(self, target: Path | None) -> bool:
         """Open a service dir, config dir or ioc.yaml; reload entities if needed."""
         try:
-            instance = resolve(target)
+            instance = find_instance(target)
             same_image = (
                 self.model is not None
                 and instance.image == self.instance.image

@@ -11,7 +11,7 @@ from . import catalogue as cat
 from .document import Document
 from .image import ImageRef, schema_url
 
-__all__ = ["Instance", "load_catalogue", "open_document", "resolve"]
+__all__ = ["Instance", "find_instance", "load_catalogue", "open_document"]
 
 
 @dataclass
@@ -38,7 +38,7 @@ def _is_service(folder: Path) -> bool:
     )
 
 
-def resolve(target: Path | None) -> Instance:
+def find_instance(target: Path | None) -> Instance:
     """Work out the instance from a service dir, its config dir or an ioc.yaml.
 
     A service dir need not have a ``config/ioc.yaml`` yet: that is a new
@@ -52,7 +52,7 @@ def resolve(target: Path | None) -> Instance:
             target = target.parent
         service_dir = target if _is_service(target) else None
         if service_dir is None and (target / "ioc.yaml").is_file():
-            return resolve(target / "ioc.yaml")
+            return find_instance(target / "ioc.yaml")
         if service_dir is None:
             raise FileNotFoundError(
                 f"{target} has no values.yaml or compose.yml, so is not an IOC "

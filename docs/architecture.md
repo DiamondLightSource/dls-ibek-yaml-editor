@@ -15,7 +15,7 @@ flowchart TD
         commands["commands<br/>DocumentModel + undo commands"]
     end
     subgraph core ["core (no Qt)"]
-        service["service<br/>resolve, load_catalogue, open_document"]
+        service["service<br/>find_instance, load_catalogue, open_document"]
         validate["validate<br/>ibek's IOC model"]
         document["document<br/>round-trip ioc.yaml"]
         catalogue["catalogue<br/>entity types and parameters"]
@@ -67,7 +67,7 @@ sequenceDiagram
     User->>CLI: dls-ibek-yaml-editor services/fe99i-mo-ioc-01
     CLI->>W: run(target, Sources)
     W->>W: show(), then load() on the first event-loop turn
-    W->>S: resolve(target)
+    W->>S: find_instance(target)
     S-->>W: Instance(ioc_yaml, service_dir, image from values.yaml)
     W->>S: load_catalogue(instance, sources)
     alt --defs DIR
