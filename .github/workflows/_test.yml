@@ -29,7 +29,12 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.0
 
+      - name: Install Qt system libraries
+        run: ./scripts/install-qt-test-deps.sh
+
       - name: Run tests
+        env:
+          DLS_IBEK_YAML_EDITOR_REQUIRE_GUI: "1"
         run: uv run --locked tox -e tests
 
       - name: Upload coverage to Codecov
