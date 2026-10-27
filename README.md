@@ -121,8 +121,10 @@ Saving retains comments, quoting and Jinja text, but serialises the whole
 document, so spacing and indentation may change. Commented entities stay
 commented out. Invalid entity collections are rejected when opening a file.
 The file is replaced only after a complete temporary copy has been written.
-Existing symlinks are followed and file permissions retained; new files are
-private to the current user (0600).
+Existing symlinks are followed and file permissions retained; new files get
+the usual permissions for your umask (0664 with umask 002). A file owned by
+someone else, or in a directory you can't create files in, is rewritten in
+place instead, so its owner doesn't change.
 
 ## Registry access
 

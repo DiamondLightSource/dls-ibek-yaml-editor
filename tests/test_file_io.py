@@ -43,3 +43,41 @@ def test_failed_save_preserves_original(
     assert document.path is None
     assert path.read_text() == original
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_new_file_follows_umask(tmp_path: Path):
+    old = os.umask(0o002)
+    try:
+        path = tmp_path / "config" / "ioc.yaml"
+        atomic_write_text(path, "new")
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o664
+
+
+def test_file_of_another_user_is_written_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "ioc.yaml"
+    path.write_text("original")
+    inode = path.stat().st_ino
+    monkeypatch.setattr(os, "geteuid", lambda: path.stat().st_uid + 1)
+    atomic_write_text(path, "replacement")
+    assert path.read_text() == "replacement"
+    assert path.stat().st_ino == inode  # same file, so its owner is unchanged
+
+
+def test_unwritable_directory_falls_back_to_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path = tmp_path / "ioc.yaml"
+    path.write_text("original")
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise PermissionError("no write access to the directory")
+
+    monkeypatch.setattr("tempfile.mkstemp", refuse)
+    atomic_write_text(path, "replacement")
+    assert path.read_text() == "replacement"
+    with pytest.raises(PermissionError):
+        atomic_write_text(tmp_path / "new.yaml", "new")
