@@ -1,112 +1,162 @@
-[![CI](https://github.com/DiamondLightSource/dls-ibek-yaml-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/DiamondLightSource/dls-ibek-yaml-editor/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/DiamondLightSource/dls-ibek-yaml-editor/branch/main/graph/badge.svg)](https://codecov.io/gh/DiamondLightSource/dls-ibek-yaml-editor)
-[![PyPI](https://img.shields.io/pypi/v/dls-ibek-yaml-editor.svg)](https://pypi.org/project/dls-ibek-yaml-editor)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
-
 # dls-ibek-yaml-editor
 
-An xeb-like GUI for creating and editing ibek `ioc.yaml` files.
+A desktop editor for ibek `ioc.yaml` files, with a table layout similar to
+[xeb](https://github.com/DiamondLightSource/iocbuilder).
 
-You point it at an IOC service directory, for example
-`deb-services/services/fe99i-mo-ioc-01`. The tool reads the generic IOC image
-pinned in that directory's `values.yaml`. It then fetches that image's
-`/epics/ibek-defs` straight from the container registry. You don't need docker,
-podman or a local checkout. The download is cached, so it happens once per
-image tag. Those definitions include the modules inherited from the base image
-(asyn, iocStats, autosave, …). So the editor offers exactly the entities that
-version of the generic IOC can instantiate.
+Open an IOC service directory, choose an entity type, and edit its parameters.
+The editor gets the available entity types from the service's generic IOC
+image. It reads the registry directly; Docker and Podman are not needed.
 
-What            | Where
-:---:           | :---:
-Source          | <https://github.com/DiamondLightSource/dls-ibek-yaml-editor>
-PyPI            | `pip install dls-ibek-yaml-editor`
-Releases        | <https://github.com/DiamondLightSource/dls-ibek-yaml-editor/releases>
-Code structure  | [docs/architecture.md](docs/architecture.md)
+## Quick start
 
-## Usage
+Requires Python 3.13 or later and a desktop environment that can run Qt.
 
+```sh
+uvx dls-ibek-yaml-editor services/fe99i-mo-ioc-01
 ```
-uvx dls-ibek-yaml-editor services/fe99i-mo-ioc-01            # edit, or create a new instance
-uvx dls-ibek-yaml-editor services/fe99i-mo-ioc-01 --validate # check it with ibek
+
+Or install it into a Python environment:
+
+```sh
+pip install dls-ibek-yaml-editor
+dls-ibek-yaml-editor services/fe99i-mo-ioc-01
+```
+
+The target can be a service directory, its `config` directory, or an
+`ioc.yaml` file. A service normally contains:
+
+```text
+fe99i-mo-ioc-01/
+├── values.yaml          # selects the generic IOC image
+└── config/
+    ├── ioc.yaml         # the file you edit
+    └── *.ibek.support.yaml  # optional local entity definitions
+```
+
+Services using `compose.yml` or `compose.yaml` are also recognised.
+If a service has no `config/ioc.yaml`, the editor starts a new document and
+creates it when you save. New documents get a schema header when a schema URL
+can be derived from the image reference.
+
+## Edit and save
+
+1. Select a type in the list on the left to see its entities as table rows.
+2. Use **Components** to add a type, then **Edit > Insert Row** to add an entity.
+3. Edit the parameter cells. Hover over a column heading for its description.
+4. Use **Tools > Validate** (`F5`) to check the document with ibek.
+5. Save with `Ctrl+S`. Saving validates again; if there are problems, you can
+   cancel or choose **Save anyway**.
+
+| In the table | Meaning |
+| --- | --- |
+| Grey italic value | A default; it is not written unless you set it explicitly |
+| Bold column heading | A required parameter |
+| Red empty cell | A required value is missing |
+| Orange cell or row heading | A problem found during validation |
+| **X** in the first column | The entity is commented out |
+
+Double-click the **X** cell to toggle it, or clear it to enable the entity.
+Commented entities remain editable, but validation and reference choices
+exclude them. Types missing from the loaded definitions have read-only cells.
+
+Enums and booleans use drop-downs. Object-reference drop-downs offer IDs from
+active entities in the document.
+
+### Useful shortcuts
+
+| Action | Shortcut |
+| --- | --- |
+| Insert row above / below | `Ctrl+I` / `Ctrl+U` |
+| Cut / copy / paste | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` |
+| Clear selected cells | `Ctrl+D` or `Delete` |
+| Fill selected cells | `Ctrl+L` |
+| Fill and increment the last number | `Ctrl+R` |
+| Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` |
+| Validate | `F5` |
+| Save | `Ctrl+S` |
+
+Fill copies the top selected cell down each selected column, or the leftmost
+cell across a single selected row. Incrementing preserves number padding:
+`MOT.APTR03X` becomes `MOT.APTR04X`, `MOT.APTR05X`, and so on.
+Clipboard data uses tabs between columns and newlines between rows.
+
+### Entity order and file formatting
+
+Entity order is startup order. Drag a type in the left list to move its whole
+table, or drag a row heading to move an entity within a table. The
+**Components > Move Table Up/Down** commands also move whole tables.
+
+Opening a file with interleaved types groups them by first appearance. This
+changes startup order, is shown as an undoable edit, and is only written when
+you save. Use `Ctrl+Z` to restore the original order. An object must be defined
+before another entity references its ID; validation reports these forward
+references. Plain string links, such as some `port` parameters, are not checked.
+
+The editor uses ruamel.yaml to retain comments, quotes and Jinja text. It
+serialises the whole document, so arbitrary formatting is not guaranteed to
+remain identical. The tests check exact preservation for the bundled example.
+See the [review findings](docs/review.md) for known edge cases, including
+commented rows in files with different indentation.
+
+## Choose where definitions come from
+
+Usually the image in the service configuration is enough. To override it:
+
+| Option | Source |
+| --- | --- |
+| `--image REF` | A different generic IOC image |
+| `--generic-ioc PATH` | A local checkout: its Dockerfile's support modules plus definitions fetched from its base runtime image |
+| `--defs DIR` | The directory's `*.ibek.support.yaml` files; no registry access |
+
+If combined, `--defs` takes priority over `--generic-ioc`, which takes priority
+over the image. The editor then adds support files beside the target `ioc.yaml`.
+A local definition replaces the **whole module** with the same name.
+
+For example, to work from local definitions:
+
+```sh
+uvx dls-ibek-yaml-editor services/fe99i-mo-ioc-01 --defs ./definitions
+```
+
+With no target, any of these source options opens an untitled document. Save
+asks for a filename. A checkout whose Git description differs from the pinned
+image tag produces a warning.
+
+## Check a file without opening a window
+
+```sh
+uvx dls-ibek-yaml-editor services/fe99i-mo-ioc-01 --validate
 uvx dls-ibek-yaml-editor services/fe99i-mo-ioc-01 --list-entities
 ```
 
-The argument can be any of these:
+These commands do not import Qt or require a display. `--validate` exits with
+status `0` when no problems are found and `1` for validation problems or a
+missing IOC file. Source options work with both commands.
 
-- a service directory
-- its `config` directory
-- an `ioc.yaml`
+## Registry access and cache
 
-If a service directory has no `config/ioc.yaml` yet, the tool starts a new
-instance and writes the file on the first save. The new file's `$schema`
-header points at the schema published for the pinned image tag, so VS Code
-can validate the file outside the container.
+The first image fetch needs registry access. Definitions are cached under
+`~/.cache/dls-ibek-yaml-editor`; set `DLS_IBEK_YAML_EDITOR_CACHE` to use another
+location.
 
-These options change where the entities come from:
+A cached tag is reused without contacting the registry. Use `--refresh` to
+check for an image rebuilt under the same tag. The `latest` tag is always
+checked. A failed manifest request falls back to an existing cache and reports
+that it is doing so.
 
-Option                | Entities come from
-:---                  | :---
-(default)             | the image in `values.yaml`
-`--image REF`         | another image
-`--generic-ioc PATH`  | a local generic IOC checkout, for an unreleased version: its Dockerfile's support modules, plus the base image's from the registry. A warning is shown if the checkout's tag differs from `values.yaml`.
-`--defs DIR`          | a folder of `*.ibek.support.yaml`
+For private registries, the client reads inline `auth` entries from Docker's
+`config.json` (`~/.docker`, or `DOCKER_CONFIG`). Credential helpers are not
+supported. It also supports matching `CI_REGISTRY`, `CI_REGISTRY_USER` and
+`CI_REGISTRY_PASSWORD`, but currently checks them only if Docker's config file
+can be read and parsed. See [the review](docs/review.md#4-ci-registry-credentials-depend-on-docker-config--medium-priority).
 
-The instance's own `config/*.ibek.support.yaml` are always added on top.
+## Development
 
-## The window
+- [Architecture](docs/architecture.md): responsibilities and data flow.
+- [Development and testing](docs/development.md): setup, checks and coverage.
+- [Code review](docs/review.md): bugs, test gaps and maintainability recommendations.
+- `PLAN.md`: the original project brief, where present; it is historical context.
 
-The layout follows xeb:
-
-- **Left:** the entity types used in the file. Pick one to edit its table.
-  Rows are entities and columns are parameters.
-- **Components menu:** adds a type.
-- **Undo stack:** in a dock on the left.
-
-Inside the table:
-
-- Defaults are shown in grey italics and are not written to the file.
-- Required cells that are empty are red. Bold column headers are required
-  parameters.
-- Enums and booleans are edited with drop-downs. Object references offer the
-  ids defined in the file.
-- The first column, **X**, comments a row out, as in xeb. The entity is saved
-  as a commented-out block (`  # - type: …`), as VS Code's Ctrl+/ would write
-  it, and blocks like that in an existing file open as X rows. ibek ignores a
-  commented entity, so validation skips it and its ids can't be referenced.
-  Clear the cell (Ctrl+D) to uncomment it.
-
-The Edit menu keeps xeb's commands and shortcuts:
-
-- Insert Row (Ctrl+I) and Insert Row Under (Ctrl+U)
-- Cut, copy and paste (tab-separated, so spreadsheets work)
-- Clear (Ctrl+D)
-- Fill Cells (Ctrl+L)
-- Fill Cells and Increment (Ctrl+R), which turns `MOT.APTR03X` into
-  `MOT.APTR04X`, `MOT.APTR05X`, …
-
-The order of `entities` is the IOC's startup order. As in xeb, each type's
-entities are kept together, and the order of the type list is the order of the
-file. Drag a type in the list, or use Components > Move Table Up/Down, to move
-a whole table. Drag a row header to reorder entities within a table. If a file
-interleaves types, it is grouped by type when it is opened. That step can be
-undone, and nothing is written until you save. ibek needs an entity to come
-before anything that refers to its id, and validation reports a reference that
-comes too early.
-
-**Tools > Validate** (F5) checks the file with ibek's own model. It runs again
-on every save, and the problems are listed and highlighted in the tables.
-
-Saving changes only the lines you edited. Comments, quoting and Jinja are kept.
-
-## Registry access
-
-Images are pulled anonymously. If a registry needs credentials, they are read
-from `~/.docker/config.json` (`docker login`) or from `CI_REGISTRY_*`. Fetched
-definitions are cached in `~/.cache/dls-ibek-yaml-editor`, or wherever
-`DLS_IBEK_YAML_EDITOR_CACHE` points. A cached tag is used without contacting
-the registry, so later runs start at once and work offline. Pass `--refresh`
-to check the registry for an image rebuilt under the same tag (`latest` is
-always checked).
-
-With no target, `--image`, `--generic-ioc` or `--defs` open an untitled
-instance using those entities; Save asks where to write it.
+[Source](https://github.com/DiamondLightSource/dls-ibek-yaml-editor) ·
+[Releases](https://github.com/DiamondLightSource/dls-ibek-yaml-editor/releases) ·
+[Apache 2.0 licence](LICENSE)

@@ -1,260 +1,157 @@
-# How the code is organised
+# Architecture
 
-This page is for anyone changing the tool. The [README](../README.md) covers
-using it.
+The editor has a Python core and a Qt interface. The core discovers entity
+definitions, loads YAML and validates it. The interface presents tables and
+records edits for undo. [The README](../README.md) explains how to use it.
 
-## Module map
+## Main parts
 
 ```mermaid
 flowchart TD
-    main["__main__<br/>typer CLI"]
-    subgraph gui ["gui/ (PySide6)"]
-        window["main_window<br/>MainWindow, TableView"]
-        table["table_model<br/>EntityTableModel"]
-        delegates["delegates<br/>CellDelegate"]
-        commands["commands<br/>DocumentModel + undo commands"]
-    end
-    subgraph core ["core (no Qt)"]
-        service["service<br/>find_instance, load_catalogue, open_document"]
-        validate["validate<br/>ibek's IOC model"]
-        document["document<br/>round-trip ioc.yaml"]
-        catalogue["catalogue<br/>entity types and parameters"]
-        image["image<br/>registry pull + cache"]
-    end
-    ibek[("ibek")]
-
-    main --> service & validate
-    main -. "imported only when the GUI starts" .-> window
-    window --> table & delegates & commands & service & validate
-    delegates --> table
-    table --> commands
-    commands --> document
-    service --> catalogue & document & image
-    validate --> document & catalogue
-    catalogue --> image
-    catalogue & validate & image --> ibek
+    CLI["CLI: __main__.py"] --> Service["service.py: locate and open an IOC"]
+    CLI --> Window["gui/main_window.py: window and table actions"]
+    CLI --> Validation["validate.py: ibek validation"]
+    Window --> Service
+    Window --> Validation
+    Window --> Table["gui/table_model.py and delegates.py"]
+    Table --> Commands["gui/commands.py: edits and undo"]
+    Commands --> Document["document.py: YAML and entity order"]
+    Service --> Document
+    Service --> Catalogue["catalogue.py: types and parameters"]
+    Catalogue --> Image["image.py: registry and cache"]
+    Validation --> Document
+    Validation --> Catalogue
 ```
 
-The rule that matters: **nothing outside `gui/` imports Qt.** That is why
-`--list-entities`, `--validate` and most of the tests run with no display or
-libGL. `__main__` imports the GUI inside the function that starts it. If Qt
-can't load, it reports that and exits.
+Arrows show the main dependencies, not every import. **Only `gui/` imports Qt.**
+The CLI imports the GUI when starting a window; reporting commands can run
+without a display or Qt system libraries.
 
-| Module | Job |
-|---|---|
-| `image` | Turns an image reference into a local folder of `*.ibek.support.yaml`. It talks to the registry over the OCI API, using only the standard library, and keeps a cache. |
-| `catalogue` | Parses support YAML with ibek's own `Support` model into `EntityType` and `Param` objects. Its builders are `from_defs`, `from_image` and `from_generic_ioc`. |
-| `document` | Holds the `ioc.yaml` in ruamel round-trip form and provides the edits (set, insert, remove, move, regroup, comment out). |
-| `service` | Ties a service directory to its image, its catalogue and its document. |
-| `validate` | Runs the document through ibek's generated pydantic IOC model and maps errors back to entities and fields. |
-| `gui/commands` | `DocumentModel`: the only way the GUI changes a document, through `QUndoCommand`s. |
-| `gui/table_model` | Shows one entity type as a Qt table. |
-| `gui/delegates` | The cell editors: combos for enums, bools and object references. |
-| `gui/main_window` | The xeb-style window, its menus, the clipboard, Fill and Fill and Increment. |
+| Module | Responsibility |
+| --- | --- |
+| `service.py` | Resolve a target into an `Instance`; choose definitions; open or create a `Document` |
+| `catalogue.py` | Parse support files through ibek into `Catalogue`, `EntityType` and `Param` objects |
+| `image.py` | Read image manifests and layers; resolve definition symlinks; manage the cache |
+| `document.py` | Own the round-trip YAML, entity order and commented state |
+| `validate.py` | Build ibek's IOC model and return `Problem` objects |
+| `gui/commands.py` | Own the `DocumentModel` and its `QUndoStack`; implement undoable changes |
+| `gui/table_model.py` | Present one entity type as rows and parameters as columns |
+| `gui/delegates.py` | Create text editors and drop-downs for cells |
+| `gui/main_window.py` | Assemble the window; handle files, menus, clipboard, fill and problem navigation |
 
-## Start-up
+## Opening a document
+
+```mermaid
+flowchart TD
+    Target["Service directory, config directory or IOC file"] --> Instance["Instance: file path, service directory, image"]
+    Instance --> Choice{"Definition source"}
+    Choice -->|"--defs"| Folder["Local support files"]
+    Choice -->|"--generic-ioc"| Checkout["Checkout files and base runtime image"]
+    Choice -->|"--image or service image"| Registry["Image cache or registry"]
+    Folder --> Catalogue["Catalogue"]
+    Checkout --> Catalogue
+    Registry --> Catalogue
+    Catalogue --> Local["Overlay support files beside ioc.yaml"]
+    Instance --> Document["Load YAML, or create a new document"]
+    Local --> Model["DocumentModel"]
+    Document --> Model
+    Model --> Tables["Tables, type list and undo history"]
+```
+
+`load_catalogue()` selects sources in this order: explicit definitions,
+checkout, then image. Local support files replace modules with matching names.
+Support-file parsing failures become catalogue warnings.
+
+Checkout discovery recognises the project's `ARG DEVELOPER`, `COPY` and
+`RUN ansible.sh` conventions. It is a limited parser, not a Dockerfile build
+engine. Failure to fetch the base image becomes a warning, allowing a partial
+catalogue to open.
+
+The registry client chooses linux/amd64 from a multi-platform index. It tries
+layers identified by image history first, then other layers newest first.
+It stops at the first layer containing definitions. Within a layer, it retains
+support YAML and resolves links from `epics/ibek-defs` to those files.
+
+This is tailored to the expected generic IOC layout. It does **not** reconstruct
+an arbitrary container filesystem: definitions split across layers, whiteouts
+and links into another layer need additional handling. Cache directories are
+keyed by image/tag; metadata records the manifest digest and extracted names.
+
+## Editing and undo
 
 ```mermaid
 sequenceDiagram
-    actor User
-    participant CLI as __main__
-    participant W as MainWindow
-    participant S as service
-    participant C as catalogue
-    participant I as image
-    participant R as registry
-
-    User->>CLI: dls-ibek-yaml-editor services/fe99i-mo-ioc-01
-    CLI->>W: run(target, Sources)
-    W->>W: show(), then load() on the first event-loop turn
-    W->>S: find_instance(target)
-    S-->>W: Instance(ioc_yaml, service_dir, image from values.yaml)
-    W->>S: load_catalogue(instance, sources)
-    alt --defs DIR
-        S->>C: from_defs(DIR)
-    else --generic-ioc PATH
-        S->>C: from_generic_ioc(PATH)
-        C->>C: parse the Dockerfile (DEVELOPER image, COPY + ansible.sh folders)
-        C->>I: fetch_ibek_defs(base runtime image)
-    else default, or --image
-        S->>C: from_image(image)
-        C->>I: fetch_ibek_defs(image)
-    end
-    alt tag cached and not --refresh
-        I-->>C: cache folder (no network)
-    else
-        I->>R: manifest (401, then anonymous token, then retry)
-        I->>R: config blob, history picks the COPY /assets layer
-        I->>R: stream the layer and stop once /epics/ibek-defs has passed
-        I-->>C: new cache folder, keyed by manifest digest
-    end
-    S->>S: add the instance's config/*.ibek.support.yaml
-    W->>S: open_document(instance)
-    S-->>W: Document (or a new one with the $schema header)
-    W->>W: DocumentModel, Components menu, type list, tables
+    participant UI as Table or cell editor
+    participant Table as EntityTableModel
+    participant Model as DocumentModel
+    participant Stack as QUndoStack
+    participant Doc as Document
+    UI->>Table: setData(index, text)
+    Table->>Model: set_text(entity, key, text)
+    Model->>Model: Convert text using the parameter type
+    Model->>Stack: Push a command if changed
+    Stack->>Doc: Command.redo() applies the edit
+    Stack-->>Table: Command emits valueChanged or structureChanged
+    Table-->>UI: Refresh the cell or table
+    UI->>Stack: Undo
+    Stack->>Doc: Command.undo() restores the previous state
 ```
 
-Points to know:
+Keep these rules when adding features:
 
-- **Entities come from the image, not the checkout.** A generic IOC
-  inherits modules from its base image. For example, iocStats in
-  ioc-dlsmotorplc comes from `ioc-asyn-developer`. Those modules are in the
-  runtime image's `/epics/ibek-defs` but not in the generic IOC's
-  Dockerfile. `--generic-ioc` handles this by pulling the base image for
-  them.
-- **`/epics/ibek-defs/*.yaml` are symlinks** into
-  `/epics/generic-source/...`, which comes earlier in the same layer.
-  `_scan_layer` keeps every support YAML it passes, then resolves the links.
-- **A cached tag skips the network.** Release tags don't change, and some
-  workstations can't reach the registry. `--refresh` asks the registry
-  anyway, and a `latest` tag is always checked.
+- Persistent GUI edits belong on the undo stack. Paste, fill and clear group
+  their cell commands into one undo action. Adding an empty table is UI state
+  and does not itself change the document.
+- Find entity rows **by identity** (`is`, `index_of`, `row_of`). Two new entities
+  can be equal dictionaries while representing different rows.
+- `Document.entities` determines startup order. `DocumentModel.type_order`
+  determines table order; regrouping synchronises them through an undo command.
+- Structure changes reset table models. Drag handlers defer changes until Qt
+  has finished handling its own move signal.
+- The stack's clean marker tracks unsaved edits. Set it only after a successful
+  write; clearing it prematurely can lose the unsaved-changes prompt.
 
-## How an edit flows
+## YAML and commented entities
 
-```mermaid
-classDiagram
-    class Document {
-        data: CommentedMap
-        entities
-        set(entity, key, value)
-        insert()
-        remove()
-        move()
-        reorder()
-        is_commented()
-        set_commented()
-        dumps()
-        save()
-    }
-    class DocumentModel {
-        document: Document
-        catalogue: Catalogue
-        stack: QUndoStack
-        type_order: list
-        valueChanged(entity, key)
-        structureChanged()
-        set_text()
-        insert()
-        remove()
-        move()
-        set_type_order()
-        remove_table()
-    }
-    class EntityTableModel {
-        type_name
-        rows: entities of that type
-        columns: X + parameters
-        data()
-        setData()
-    }
-    class QUndoCommand {
-        redo()
-        undo()
-    }
-    class MainWindow
-    MainWindow --> DocumentModel
-    MainWindow --> "one per type" EntityTableModel
-    EntityTableModel --> DocumentModel
-    DocumentModel --> Document
-    DocumentModel ..> QUndoCommand : pushes
-    QUndoCommand <|-- SetValue
-    QUndoCommand <|-- SetCommented
-    QUndoCommand <|-- InsertEntity
-    QUndoCommand <|-- RemoveEntity
-    QUndoCommand <|-- MoveEntity
-    QUndoCommand <|-- Reorder
-    QUndoCommand <|-- SetDescription
-```
+`Document` holds ruamel `CommentedMap` and `CommentedSeq` objects so comments,
+quotes and scalar styles can survive editing. Loading temporarily uncomments
+recognised `# - type:` blocks and tracks their entities by object identity.
+Serialisation dumps the YAML and comments those entities again.
 
-```mermaid
-sequenceDiagram
-    participant V as TableView / CellDelegate
-    participant T as EntityTableModel
-    participant M as DocumentModel
-    participant U as QUndoStack
-    participant D as Document
+Blank separators are stored in ruamel comment tokens attached to keys.
+`_normalise_separators()` adjusts those tokens after inserts and moves. This
+couples the document code to ruamel's comment representation; keep it covered
+with small before/after fixtures as well as the full IOC example.
 
-    V->>T: setData(index, "1e-05")
-    T->>M: set_text(entity, "MRES", "1e-05")
-    M->>M: convert the text with the parameter's type; ignore if unchanged
-    M->>U: push(SetValue)
-    U->>D: SetValue.redo() → set(entity, key, value)
-    U-->>M: valueChanged(entity, key)
-    M-->>T: valueChanged → dataChanged for that cell
-```
-
-Rules that keep this working:
-
-- **Every change goes through `DocumentModel` and the undo stack.** Undo,
-  redo and the "modified" title mark all depend on it. Fill, paste and
-  clear are undo macros of single-cell edits.
-- **Entities are found by identity, never by equality.** Two new entities
-  of the same type are equal dicts. Use `row_of`, `index_of` and `is`, never
-  `in` or `.index()` on lists of entities.
-- **Changes to the order** emit `structureChanged`, and every table rebuilds.
-  Drag and drop handlers schedule the change with `QTimer.singleShot`,
-  because changing the model while Qt is still handling its own drop
-  signal is unsafe.
-- **Grouped by type, as in xeb.** The type list order *is* the file order,
-  so moving a table regroups `entities` (`Reorder`). ibek needs an entity to
-  come before anything that refers to its id. Validation catches an `object`
-  reference that comes too early. Plain string links such as `port:` are not
-  checked, by ibek or here.
-
-## Loading and saving `ioc.yaml`
-
-```mermaid
-flowchart LR
-    subgraph load ["Document(text)"]
-        A[text] --> B["uncomment_entities<br/>'# - type:' blocks that parse<br/>as one entity become real items"]
-        B --> C["ruamel round-trip load<br/>preserve_quotes, width 4096"]
-        C --> D["entities + the positions<br/>and prefixes of commented ones"]
-    end
-    subgraph save ["dumps()"]
-        E["_normalise_separators<br/>blank line after each entity,<br/>comments left alone"] --> F[ruamel dump]
-        F --> G["comment_entities<br/>re-comment X rows with<br/>their original prefix"]
-        G --> H[text]
-    end
-    D -. edits .-> E
-```
-
-- **An unedited file saves byte-identical,** and tests check that for
-  fe99i. That's the basis for "saving changes only the lines you edited",
-  so check it whenever this code changes.
-- **Blank lines between entities** are stored by ruamel as a comment token
-  on the *last key* of the entity before them. Adding a key at the end or
-  moving an entity would move that blank line, so `_normalise_separators`
-  puts it back on each entity's last key.
-- **Commented-out entities are YAML comments, not `entity_enabled: false`.**
-  That matches xeb and how people comment out entities by hand. While the
-  file is open they are real entities, so they can still be edited.
-  `plain()`, which feeds validation, and `ids()`, which feeds the reference
-  drop-downs, both leave them out.
+The serializer writes the whole document and uses a fixed indentation style.
+Exact text preservation is tested for the example fixture, not guaranteed for
+all YAML layouts. See [the review](review.md) for confirmed edge cases.
 
 ## Validation
 
-`validate.validate` builds ibek's models from the catalogue's support files
-(`EntityFactory.make_entity_models`, then `IocFactory.make_ioc_model`). It
-then validates `document.plain()` and turns each pydantic error location
-`entities, <n>, <type>, <field>` into a `Problem` for that entity and field.
-Because commented entities are left out, `<n>` is mapped back to the
-entity's position in the whole file. ibek prints while it works and gives a
-pydantic deprecation warning, so both are silenced. ibek's global id
-registry is cleared before and after each run.
+`Document.plain()` produces ordinary Python data without commented entities.
+Validation builds models using ibek's `EntityFactory` and `IocFactory`, then
+maps errors to `Problem(entity, field, message)`. Entity positions are mapped
+back to the full document, including commented rows.
 
-## Packaging constraints
+ibek's ID registry is cleared before and after instance validation. The
+validator sets ibek's IOC name, captures stdout and suppresses deprecation
+warnings while invoking ibek. These are process-wide effects: move validation
+to concurrent workers only after addressing that shared state.
 
-- **Python ≥ 3.13,** because ibek ≥ 4.7 requires it.
-- **`pyside6-essentials` < 6.10.** Wheels from 6.10 on need glibc 2.34, and
-  RHEL 8 has 2.28.
-- **No docker or podman.** The registry is read with `urllib` and
-  `truststore`, which uses the OS certificate store, as ibek does.
+The Problems panel stores positions from the last validation. Edits do not
+currently recompute them; structural changes can make navigation stale.
 
-## Tests
+## Where to make a change
 
-- **Data:** `tests/data` holds a copy of fe99i, a snapshot of the image's
-  support YAML and a Dockerfile.
-- **Registry tests** use a fake registry made from in-memory tar layers.
-  `DLS_IBEK_YAML_EDITOR_LIVE=1` adds one test against the real registry.
-- **GUI tests** (`tests/test_gui.py`) run with `QT_QPA_PLATFORM=offscreen`,
-  and skip themselves when Qt can't load.
+| Change | Start here | Tests to extend |
+| --- | --- | --- |
+| File discovery or definition precedence | `service.py` | `test_service.py` |
+| A new definition source | `catalogue.py`, then `service.py` | `test_catalogue.py` |
+| Authentication, layers or cache | `image.py` | `test_image.py` |
+| YAML preservation or value conversion | `document.py` | `test_document.py` |
+| A new undoable operation | `gui/commands.py` | `test_gui.py` |
+| Cell editing or presentation | Table model and delegates | `test_gui.py` |
+| Validation mapping | `validate.py` | Currently `test_service.py` and `test_document.py` |
+
+See [development and testing](development.md) for commands.
