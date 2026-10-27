@@ -187,6 +187,41 @@ Editing a field drops that field's problems, commenting an entity out or
 removing it drops all of its problems, and the rest stay visible. The panel
 title then says the results predate the edit; F5 validates again.
 
+## Design decisions
+
+These choices aren't visible from the code alone. Keep them unless the reason
+behind them has changed.
+
+- **Entities come from the image, not the checkout.** A generic IOC inherits
+  support modules from its base image. For example, ioc-dlsmotorplc never
+  installs iocStats, which comes from `ioc-asyn-developer`. Only the runtime
+  image's `/epics/ibek-defs` lists everything the IOC can instantiate. That is
+  why the Components menu can offer `devIocStats.devIocStatsHelper` even though
+  the checkout's newer ibek-support has dropped it. `--generic-ioc` handles
+  this by pulling the base image for the inherited modules.
+- **A cached tag doesn't contact the registry.** Release tags aren't rebuilt.
+  Some workstations, ws606 for one, can't reach `gitlab.diamond.ac.uk:5050`,
+  and every request there waits out the timeout. `--refresh` asks anyway, and
+  a `latest` tag is always checked. For the same reason, caches from older
+  versions stay usable, and `--generic-ioc` still offers the checkout's
+  modules, with a warning, when its base image can't be fetched.
+- **Tables are grouped by type, as in xeb.** The order of `entities` is the
+  IOC's startup order. The type list's order is the file order, and each
+  type's entities are kept together. ibek needs an entity to come before
+  anything that refers to its id, and validation reports an `object`
+  reference that comes too early. String links such as `port:` aren't checked,
+  by ibek or here.
+- **Commented-out rows are YAML comments, not `entity_enabled: false`.** ibek
+  has a per-entity switch, but a disabled entity is still validated and its
+  ids still exist. A comment matches xeb, and matches how people disable
+  entities by hand with VS Code's Ctrl+/.
+- **Only `gui/` imports Qt.** `--list-entities`, `--validate` and most tests
+  run without a display or libGL, and the CLI reports when Qt can't load
+  instead of crashing.
+- **PySide6 is pinned below 6.10.** Wheels from 6.10 on need glibc 2.34, and
+  RHEL 8 workstations have 2.28. ibek ≥ 4.7 needs Python 3.13, which sets
+  `requires-python`.
+
 ## Where to make a change
 
 | Change | Start here | Tests to extend |
