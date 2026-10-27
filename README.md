@@ -44,6 +44,7 @@ can be derived from the image reference.
 2. Use **Components** to add a type, then **Edit > Insert Row** to add an entity.
 3. Edit the parameter cells. Hover over a column heading for its description.
 4. Use **Tools > Validate** (`F5`) to check the document with ibek.
+   Editing clears results from the previous validation; press `F5` to recheck.
 5. Save with `Ctrl+S`. Saving validates again; if there are problems, you can
    cancel or choose **Save anyway**.
 
@@ -59,7 +60,7 @@ Double-click the **X** cell to toggle it, or clear it to enable the entity.
 Commented entities remain editable, but validation and reference choices
 exclude them. Types missing from the loaded definitions have read-only cells.
 
-Enums and booleans use drop-downs. Object-reference drop-downs offer IDs from
+Enums and booleans use editable drop-downs, so Jinja values can be retained. Object-reference drop-downs offer IDs from
 active entities in the document.
 
 ### Useful shortcuts
@@ -78,7 +79,10 @@ active entities in the document.
 Fill copies the top selected cell down each selected column, or the leftmost
 cell across a single selected row. Incrementing preserves number padding:
 `MOT.APTR03X` becomes `MOT.APTR04X`, `MOT.APTR05X`, and so on.
-Clipboard data uses tabs between columns and newlines between rows.
+Clipboard data uses quoted tab-separated text for spreadsheets and a lossless
+internal format between editor tables. Backslashes are literal. Dictionary and
+list parameters accept YAML or JSON in the cell. Clearing a cell removes its
+key; existing null and empty-string values are preserved until edited.
 
 ### Entity order and file formatting
 
@@ -95,8 +99,11 @@ references. Plain string links, such as some `port` parameters, are not checked.
 The editor uses ruamel.yaml to retain comments, quotes and Jinja text. It
 serialises the whole document, so arbitrary formatting is not guaranteed to
 remain identical. The tests check exact preservation for the bundled example.
-See the [review findings](docs/review.md) for known edge cases, including
-commented rows in files with different indentation.
+Commented rows remain disabled when indentation is normalised. Invalid entity
+collections are rejected when opening a file, rather than replaced with an
+empty document. Saving replaces the file only after a complete temporary copy
+has been written. Existing symlinks are followed and file permissions retained;
+new files are private to the current user (0600).
 
 ## Choose where definitions come from
 
@@ -110,7 +117,9 @@ Usually the image in the service configuration is enough. To override it:
 
 If combined, `--defs` takes priority over `--generic-ioc`, which takes priority
 over the image. The editor then adds support files beside the target `ioc.yaml`.
-A local definition replaces the **whole module** with the same name.
+A local definition replaces the **whole module** with the same name. Missing
+definition directories and invalid support files are errors; a failed load
+leaves the current document open.
 
 For example, to work from local definitions:
 
@@ -135,9 +144,13 @@ missing IOC file. Source options work with both commands.
 
 ## Registry access and cache
 
-The first image fetch needs registry access. Definitions are cached under
+The first image fetch needs registry access and scans all layers to include
+inherited definitions and respect replacements and deletions. Definitions are cached under
 `~/.cache/dls-ibek-yaml-editor`; set `DLS_IBEK_YAML_EDITOR_CACHE` to use another
-location.
+location. Refreshes publish a complete new snapshot and retain older snapshots
+so open documents can keep using them. To reclaim space, close the editor and
+remove its cache directory; the next run will fetch definitions again. Caches
+from older editor versions are rebuilt once.
 
 A cached tag is reused without contacting the registry. Use `--refresh` to
 check for an image rebuilt under the same tag. The `latest` tag is always
@@ -147,14 +160,13 @@ that it is doing so.
 For private registries, the client reads inline `auth` entries from Docker's
 `config.json` (`~/.docker`, or `DOCKER_CONFIG`). Credential helpers are not
 supported. It also supports matching `CI_REGISTRY`, `CI_REGISTRY_USER` and
-`CI_REGISTRY_PASSWORD`, but currently checks them only if Docker's config file
-can be read and parsed. See [the review](docs/review.md#4-ci-registry-credentials-depend-on-docker-config--medium-priority).
+`CI_REGISTRY_PASSWORD`, including when Docker's config file is absent. A
+matching inline Docker credential takes priority.
 
 ## Development
 
 - [Architecture](docs/architecture.md): responsibilities and data flow.
 - [Development and testing](docs/development.md): setup, checks and coverage.
-- [Code review](docs/review.md): bugs, test gaps and maintainability recommendations.
 - `PLAN.md`: the original project brief, where present; it is historical context.
 
 [Source](https://github.com/DiamondLightSource/dls-ibek-yaml-editor) ·

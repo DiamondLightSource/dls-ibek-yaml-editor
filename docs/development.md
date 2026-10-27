@@ -37,7 +37,17 @@ uv run --locked pyright --pythonpath "$UV_PROJECT_ENVIRONMENT/bin/python" src te
 The GUI tests select Qt's `offscreen` platform automatically. This avoids a
 visible desktop, but Qt's native libraries are still required. If an import
 fails (for example, missing `libGL.so.1`), the **whole GUI test module skips**.
-Always inspect the skip summary; a passing core run is not a GUI check.
+Always inspect the skip summary; a passing core run is not a GUI check. CI
+sets `DLS_IBEK_YAML_EDITOR_REQUIRE_GUI=1`, which turns a failed Qt import into
+an error instead of skipping the GUI suite. You can set it locally too.
+
+On Ubuntu, the native libraries for offscreen testing can be installed with:
+
+```sh
+./scripts/install-qt-test-deps.sh
+```
+
+Inside claude-sandbox, run that command from the outer container.
 
 The configured tox environments run tests with coverage, type checking and
 pre-commit. CI requests Python 3.13 and 3.14 on Ubuntu. Pre-commit includes
@@ -50,14 +60,18 @@ the commands above are preferable for a review that should preserve them.
 | --- | --- |
 | `test_catalogue.py` | Types, defaults, module replacement and checkout discovery |
 | `test_document.py` | Example round trips, small edits, ordering, commented entities and error positions |
-| `test_service.py` | Target discovery, new documents, local definitions and ibek validation |
+| `test_service.py` | Target discovery, new documents and local definitions |
+| `test_validate.py` | ibek validation and global-state cleanup |
+| `test_file_io.py` | Safe replacement, permissions, symlinks and failed saves |
+| `test_table_text.py` | Lossless clipboard text and numeric fill |
 | `test_image.py` | Image references, schema URLs, simulated layers, cache reuse and offline fallback |
 | `test_cli.py` | Version, entity listing and validation exit status |
 | `test_gui.py` | Tables, edits, undo, save, fill, paste, ordering, references and commented rows |
 
 Tests copy service fixtures to temporary directories and isolate the image
-cache. Registry unit tests use tar archives built in memory. They replace
-`Registry.get`, so they do not exercise HTTP authentication or redirects.
+cache. Registry unit tests use tar archives built in memory. Layer tests replace
+`Registry.get`; separate transport tests exercise credential lookup, challenges
+and redirect-header handling with simulated HTTP responses.
 
 The optional live test reads the image pinned in `tests/conftest.py`:
 
@@ -73,7 +87,8 @@ Prefer observable outcomes: the saved YAML, undo restoring the original
 content, the selected problem row, or the CLI's exit status. Use small fixtures
 for edge cases and retain the full IOC fixture for realistic integration.
 
-Prioritise:
+Regression tests now cover the following areas; extend them when changing
+related behaviour:
 
 - Different YAML indentation, malformed entity collections, nested values,
   anchors, multiline strings and comment placement.
@@ -84,6 +99,6 @@ Prioritise:
 - Validation followed by insertion, deletion or reordering before navigating
   to a problem.
 
-The [review](review.md) explains the confirmed bugs and the remaining coverage
-gaps. Coverage is a guide to unexercised code; it does not establish that YAML
-or undo behaviour is correct for untested inputs.
+Coverage is a guide to unexercised code; it does not establish that YAML or
+undo behaviour is correct for untested inputs. Keep both focused regression
+tests and the original IOC fixture when extending the supported inputs.
