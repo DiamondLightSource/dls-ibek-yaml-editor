@@ -1,18 +1,8 @@
-"""Fetch a generic IOC image's ``/epics/ibek-defs`` straight from its registry.
+"""Fetch image support definitions over the registry API and cache snapshots.
 
-A generic IOC's runtime image carries every ``*.ibek.support.yaml`` it was
-built with, including those inherited from its base image, in
-``/epics/ibek-defs``. This module reads them over the OCI distribution API
-without docker or podman:
-
-1. get a pull token (anonymous, or from ``~/.docker/config.json``)
-2. read the manifest and the image config
-3. stream the layer that ``COPY``'d ``/assets`` through gunzip/untar, stopping
-   as soon as the ``epics/ibek-defs/`` entries have gone by
-
-The result is cached per image under ``~/.cache/dls-ibek-yaml-editor`` and
-keyed on the manifest digest, so later runs need one small request, or none
-at all when the registry cannot be reached.
+All layers are merged in image order to preserve inherited definitions,
+replacements and deletions. Complete immutable snapshots are published via
+an atomic pointer so failed refreshes leave the last good cache usable.
 """
 
 from __future__ import annotations
@@ -28,12 +18,16 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 import truststore
 from ibek.pattern_cmds.schema import parse_image_ref, published_schema_url
+
+from .file_io import atomic_write_text
+from .image_layers import DEFS_DIR, DefinitionLayers
 
 __all__ = [
     "DEFS_DIR",
@@ -43,7 +37,6 @@ __all__ = [
     "schema_url",
 ]
 
-DEFS_DIR = "epics/ibek-defs/"
 MANIFEST_TYPES = ", ".join(
     [
         "application/vnd.oci.image.index.v1+json",
@@ -156,20 +149,31 @@ def _open(
     if auth:
         # unredirected: blobs redirect to object storage, which rejects it
         request.add_unredirected_header("Authorization", auth)
-    return urllib.request.urlopen(  # noqa: S310
-        request, timeout=TIMEOUT, context=_ssl_context()
-    )
+    try:
+        return urllib.request.urlopen(  # noqa: S310
+            request, timeout=TIMEOUT, context=_ssl_context()
+        )
+    except urllib.error.HTTPError as exc:
+        exc.close()  # callers use status/headers, never the response body
+        raise
 
 
 def _docker_credentials(registry: str) -> str | None:
     """Basic credentials for ``registry`` from ``~/.docker/config.json``."""
     config = Path(os.getenv("DOCKER_CONFIG", Path.home() / ".docker"))
     try:
-        auths = json.loads((config / "config.json").read_text()).get("auths", {})
+        data = json.loads((config / "config.json").read_text())
+        auths = data.get("auths", {}) if isinstance(data, dict) else {}
     except (OSError, ValueError):
-        return None
+        auths = {}
+    if not isinstance(auths, dict):
+        auths = {}
     for key, value in auths.items():
-        if key.removeprefix("https://").rstrip("/") == registry and "auth" in value:
+        if (
+            key.removeprefix("https://").rstrip("/") == registry
+            and isinstance(value, dict)
+            and isinstance(value.get("auth"), str)
+        ):
             return f"Basic {value['auth']}"
     user, password = os.getenv("CI_REGISTRY_USER"), os.getenv("CI_REGISTRY_PASSWORD")
     if user and password and os.getenv("CI_REGISTRY") == registry:
@@ -208,6 +212,7 @@ class Registry:
         try:
             return _open(url, headers, self._auth)
         except urllib.error.HTTPError as exc:
+            exc.close()  # also close responses supplied by alternative transports
             if exc.code != 401 or self._authenticated:
                 raise
             self._authenticated = True
@@ -235,92 +240,31 @@ class Registry:
             )
         raise ImageError(f"{self.ref.image}: nested image index")
 
-    def blob_json(self, digest: str) -> dict[str, Any]:
-        with self.get(f"blobs/{digest}") as response:
-            return json.loads(response.read())
-
-
-# --------------------------------------------------------------------------- #
-# layer scanning
-# --------------------------------------------------------------------------- #
-def _layer_order(manifest: dict[str, Any], config: dict[str, Any]) -> list[str]:
-    """Layer digests, the one that ``COPY``'d ``/assets`` first, then newest first.
-
-    ``history`` has one entry per Dockerfile step; the ones without
-    ``empty_layer`` correspond, in order, to ``manifest["layers"]``.
-    """
-    layers = [layer["digest"] for layer in manifest.get("layers", [])]
-    steps = [h for h in config.get("history", []) if not h.get("empty_layer")]
-    preferred = [
-        digest
-        for digest, step in zip(layers, steps, strict=False)
-        if "/assets" in step.get("created_by", "")
-        or "ibek-defs" in step.get("created_by", "")
-    ]
-    rest = [d for d in reversed(layers) if d not in preferred]
-    return preferred + rest
-
-
-def _member_path(name: str) -> str:
-    return name.removeprefix("./").lstrip("/")
-
-
-def _scan_layer(registry: Registry, digest: str, dest: Path) -> list[str]:
-    """Extract ``epics/ibek-defs/*`` files from one layer into ``dest``.
-
-    ibek-defs entries are mostly symlinks into the support module sources
-    (``/epics/generic-source/ibek-support/<module>/...``), which come earlier
-    in the same layer, so every support YAML is held on to until the links are
-    resolved. Reading stops once the definitions folder has been passed and
-    every link is resolved, so only the head of a large layer is downloaded.
-    """
-    seen: dict[str, bytes] = {}  # every support YAML in the layer so far
-    links: dict[str, str] = {}  # defs file name -> link target path
-    found: list[str] = []
-    passed = False
-    with registry.get(f"blobs/{digest}") as response:
-        with tarfile.open(fileobj=response, mode="r|*") as tar:
-            for member in tar:
-                name = _member_path(member.name)
-                inside = name.startswith(DEFS_DIR)
-                if not inside and found:
-                    passed = True
-                file_name = PurePosixPath(name).name
-                if member.isfile() and (inside or name.endswith(".ibek.support.yaml")):
-                    extracted = tar.extractfile(member)
-                    data = extracted.read() if extracted else b""
-                    seen[name] = data
-                if inside and "/" not in name[len(DEFS_DIR) :]:
-                    if file_name.startswith(".wh.") or not file_name:
-                        pass
-                    elif member.isfile():
-                        (dest / file_name).write_bytes(seen[name])
-                        found.append(file_name)
-                    elif member.issym() or member.islnk():
-                        target = member.linkname
-                        if member.issym() and not target.startswith("/"):
-                            target = str(PurePosixPath(name).parent / target)
-                        links[file_name] = _member_path(target)
-                        found.append(file_name)
-                for link_name, target in list(links.items()):
-                    if target in seen:
-                        (dest / link_name).write_bytes(seen[target])
-                        del links[link_name]
-                if passed and not links:
-                    break
-    # links to files outside this layer (e.g. in a base layer) are dropped
-    return [f for f in found if f not in links]
-
 
 def _read_meta(cache: Path) -> dict[str, Any] | None:
     try:
         meta = json.loads((cache / ".meta.json").read_text())
     except (OSError, ValueError):
         return None
-    return meta if isinstance(meta, dict) else None
+    if not isinstance(meta, dict) or meta.get("layout_version") != 2:
+        return None
+    files = meta.get("files")
+    if not isinstance(files, list) or not files:
+        return None
+    if not all(
+        isinstance(name, str)
+        and Path(name).name == name
+        and name.endswith(".ibek.support.yaml")
+        and (cache / name).is_file()
+        for name in files
+    ):
+        return None
+    return meta
 
 
-def fetch_ibek_defs(image: str, log: Any = print, refresh: bool = False) -> Path:
+def fetch_ibek_defs(
+    image: str, log: Callable[[str], None] = print, refresh: bool = False
+) -> Path:
     """Return a local folder holding ``image``'s ``/epics/ibek-defs`` files.
 
     A cached tag is used without asking the registry: release tags don't
@@ -330,14 +274,21 @@ def fetch_ibek_defs(image: str, log: Any = print, refresh: bool = False) -> Path
     Raises ImageError when nothing can be fetched and nothing is cached.
     """
     ref = ImageRef.parse(image)
-    cache = _cache_dir(ref)
+    root = _cache_dir(ref)
+    cache = root
+    try:
+        name = (root / ".current").read_text().strip()
+        if Path(name).name == name and name.startswith("snapshot-"):
+            cache = root / name
+    except OSError:
+        pass
     meta = _read_meta(cache)
     if meta is not None and not refresh and ref.tag != "latest":
         return cache
     registry = Registry(ref)
     try:
         digest, manifest = registry.manifest()
-    except (urllib.error.URLError, OSError, ValueError, KeyError) as exc:
+    except (urllib.error.URLError, OSError, ValueError, KeyError, ImageError) as exc:
         if meta is not None:
             log(f"Using cached ibek definitions for {image} ({exc})")
             return cache
@@ -348,25 +299,31 @@ def fetch_ibek_defs(image: str, log: Any = print, refresh: bool = False) -> Path
 
     log(f"Fetching ibek definitions from {image} ...")
     try:
-        config = registry.blob_json(manifest["config"]["digest"])
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        tmp = Path(tempfile.mkdtemp(dir=cache.parent, prefix=".fetch-"))
+        root.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(dir=root, prefix="snapshot-"))
+        published = False
         try:
-            found: list[str] = []
-            for layer in _layer_order(manifest, config):
-                found = _scan_layer(registry, layer, tmp)
-                if found:
-                    break
-            if not found:
-                raise ImageError(f"{image} has no /{DEFS_DIR.rstrip('/')} folder")
+            layers = DefinitionLayers()
+            for layer in manifest.get("layers", []):
+                with registry.get(f"blobs/{layer['digest']}") as response:
+                    layers.apply(response)
+            found = layers.write(tmp)
             (tmp / ".meta.json").write_text(
-                json.dumps({"image": image, "digest": digest, "files": found})
+                json.dumps(
+                    {
+                        "image": image,
+                        "digest": digest,
+                        "files": found,
+                        "layout_version": 2,
+                    }
+                )
             )
-            if cache.exists():
-                shutil.rmtree(cache)
-            tmp.rename(cache)
+            atomic_write_text(root / ".current", tmp.name)
+            published = True
+            return tmp
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+            if not published:
+                shutil.rmtree(tmp, ignore_errors=True)
     except (
         urllib.error.URLError,
         OSError,

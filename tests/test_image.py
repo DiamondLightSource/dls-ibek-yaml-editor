@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 import io
 import json
 import os
@@ -123,8 +124,8 @@ def test_fetch_resolves_symlinks_and_caches(monkeypatch: pytest.MonkeyPatch):
     )
     defs = fetch_ibek_defs(IMAGE, log=lambda _: None)
     assert (defs / "motorPLC.ibek.support.yaml").read_bytes() == b"module: motorPLC\n"
-    # the COPY /assets layer is chosen from the history, so the base is not read
-    assert "blobs/sha256:base" not in requested
+    # Base and derived layers both contribute to the final filesystem.
+    assert "blobs/sha256:base" in requested
 
     requested.clear()
     assert fetch_ibek_defs(IMAGE, log=lambda _: None) == defs
@@ -136,7 +137,7 @@ def test_fetch_resolves_symlinks_and_caches(monkeypatch: pytest.MonkeyPatch):
 
 def test_fetch_uses_cache_when_offline(monkeypatch: pytest.MonkeyPatch):
     assets = _layer([("epics/ibek-defs/a.ibek.support.yaml", b"module: a\n")])
-    _fake_registry(monkeypatch, {"sha256:assets": assets})
+    _fake_registry(monkeypatch, {"sha256:assets": assets, "sha256:base": _layer([])})
     defs = fetch_ibek_defs(IMAGE, log=lambda _: None)
 
     def offline(self: Any, path: str, headers: Any = None) -> Any:
@@ -165,3 +166,236 @@ def test_live_registry():
     defs = fetch_ibek_defs(IMAGE, log=lambda _: None)
     names = {p.name for p in Path(defs).glob("*.ibek.support.yaml")}
     assert {"motorPLC.ibek.support.yaml", "iocStats.ibek.support.yaml"} <= names
+
+
+@pytest.mark.parametrize("config", [None, "{broken", "[]", '{"auths": []}', "{}"])
+def test_ci_credentials_without_docker_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: str | None
+):
+    monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path))
+    monkeypatch.setenv("CI_REGISTRY", "registry.example")
+    monkeypatch.setenv("CI_REGISTRY_USER", "dummy")
+    monkeypatch.setenv("CI_REGISTRY_PASSWORD", "dummy")
+    if config is not None:
+        (tmp_path / "config.json").write_text(config)
+    assert image._docker_credentials("registry.example") == "Basic ZHVtbXk6ZHVtbXk="
+    assert image._docker_credentials("another.example") is None
+
+
+def test_docker_credentials_take_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path))
+    monkeypatch.setenv("CI_REGISTRY", "registry.example")
+    monkeypatch.setenv("CI_REGISTRY_USER", "dummy")
+    monkeypatch.setenv("CI_REGISTRY_PASSWORD", "dummy")
+    (tmp_path / "config.json").write_text(
+        json.dumps({"auths": {"https://registry.example/": {"auth": "docker-dummy"}}})
+    )
+    assert image._docker_credentials("registry.example") == "Basic docker-dummy"
+
+
+def test_layers_merge_replace_delete_and_resolve_links(monkeypatch: pytest.MonkeyPatch):
+    base = _layer(
+        [
+            ("epics/ibek-defs/base.ibek.support.yaml", b"base"),
+            ("epics/ibek-defs/replaced.ibek.support.yaml", b"old"),
+            ("epics/ibek-defs/deleted.ibek.support.yaml", b"deleted"),
+            ("epics/source/linked.ibek.support.yaml", b"linked"),
+        ]
+    )
+    assets = _layer(
+        [
+            ("epics/ibek-defs/new.ibek.support.yaml", b"new"),
+            ("epics/ibek-defs/replaced.ibek.support.yaml", b"replacement"),
+            ("epics/ibek-defs/.wh.deleted.ibek.support.yaml", b""),
+            _link(
+                "epics/ibek-defs/linked.ibek.support.yaml",
+                "../source/linked.ibek.support.yaml",
+            ),
+        ]
+    )
+    _fake_registry(monkeypatch, {"sha256:base": base, "sha256:assets": assets})
+    defs = fetch_ibek_defs(IMAGE, log=lambda _: None)
+    assert {p.name: p.read_bytes() for p in defs.glob("*.yaml")} == {
+        "base.ibek.support.yaml": b"base",
+        "new.ibek.support.yaml": b"new",
+        "replaced.ibek.support.yaml": b"replacement",
+        "linked.ibek.support.yaml": b"linked",
+    }
+
+
+def test_opaque_directory_hides_lower_files(monkeypatch: pytest.MonkeyPatch):
+    base = _layer([("epics/ibek-defs/base.ibek.support.yaml", b"base")])
+    assets = _layer(
+        [
+            ("epics/ibek-defs/new.ibek.support.yaml", b"new"),
+            ("epics/ibek-defs/.wh..wh..opq", b""),
+        ]
+    )
+    _fake_registry(monkeypatch, {"sha256:base": base, "sha256:assets": assets})
+    defs = fetch_ibek_defs(IMAGE, log=lambda _: None)
+    assert [p.name for p in defs.glob("*.yaml")] == ["new.ibek.support.yaml"]
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [("epics/ibek-defs/ioc.schema.json", b"{}")],
+        [_link("epics/ibek-defs/missing.ibek.support.yaml", "/missing")],
+        [_link("epics/ibek-defs/cycle.ibek.support.yaml", "cycle.ibek.support.yaml")],
+    ],
+)
+def test_incomplete_definitions_fail(
+    monkeypatch: pytest.MonkeyPatch, entries: list[Any]
+):
+    _fake_registry(
+        monkeypatch, {"sha256:base": _layer([]), "sha256:assets": _layer(entries)}
+    )
+    with pytest.raises(image.ImageError):
+        fetch_ibek_defs(IMAGE, log=lambda _: None)
+
+
+@pytest.mark.parametrize("failure", ["download", "publish"])
+def test_failed_refresh_keeps_old_snapshot(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+):
+    _fake_registry(
+        monkeypatch,
+        {
+            "sha256:base": _layer([]),
+            "sha256:assets": _layer([("epics/ibek-defs/a.ibek.support.yaml", b"old")]),
+        },
+    )
+    old = fetch_ibek_defs(IMAGE, log=lambda _: None)
+    original_manifest = image.Registry.manifest
+
+    def changed(self: image.Registry) -> tuple[str, dict[str, Any]]:
+        _, manifest = original_manifest(self)
+        return "sha256:new", manifest
+
+    monkeypatch.setattr(image.Registry, "manifest", changed)
+
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("simulated failure")
+
+    if failure == "download":
+        monkeypatch.setattr(image.Registry, "get", fail)
+        monkeypatch.setattr(
+            image.Registry,
+            "manifest",
+            lambda _: ("sha256:new", {"layers": [{"digest": "new"}]}),
+        )
+    else:
+        monkeypatch.setattr(image, "atomic_write_text", fail)
+    messages: list[str] = []
+    assert fetch_ibek_defs(IMAGE, log=messages.append, refresh=True) == old
+    assert (old / "a.ibek.support.yaml").read_bytes() == b"old"
+    assert fetch_ibek_defs(IMAGE, log=lambda _: None) == old
+    assert "cached" in messages[1]
+
+
+def test_registry_authentication_retries_challenge(monkeypatch: pytest.MonkeyPatch):
+    import urllib.error
+    from email.message import Message
+
+    calls: list[tuple[str, str | None]] = []
+    headers = Message()
+    headers["WWW-Authenticate"] = (
+        'Bearer realm="https://auth.example/token",service="registry.example"'
+    )
+
+    def open_url(
+        url: str, headers: Any = None, auth: str | None = None
+    ) -> FakeResponse:
+        calls.append((url, auth))
+        if len(calls) == 1:
+            challenge = Message()
+            challenge["WWW-Authenticate"] = (
+                'Bearer realm="https://auth.example/token",service="registry.example"'
+            )
+            raise urllib.error.HTTPError(url, 401, "auth", challenge, None)
+        if url.startswith("https://auth.example"):
+            return FakeResponse(b'{"token":"dummy-token"}')
+        assert auth == "Bearer dummy-token"
+        return FakeResponse(b"ok")
+
+    monkeypatch.setattr(image, "_open", open_url)
+    monkeypatch.setattr(image, "_docker_credentials", lambda _: "Basic dummy")
+    registry = image.Registry(ImageRef.parse("registry.example/team/ioc:1"))
+    with registry.get("manifests/1") as response:
+        assert response.read() == b"ok"
+    assert calls[1][1] == "Basic dummy"
+    assert "scope=repository%3Ateam%2Fioc%3Apull" in calls[1][0]
+
+
+def test_authorization_is_not_forwarded_on_redirect(monkeypatch: pytest.MonkeyPatch):
+    import urllib.request
+    from http.client import HTTPMessage
+
+    def open_request(request: urllib.request.Request, **kwargs: Any) -> FakeResponse:
+        assert request.get_header("Authorization") == "Bearer dummy"
+        redirected = urllib.request.HTTPRedirectHandler().redirect_request(
+            request,
+            io.BytesIO(),
+            302,
+            "redirect",
+            HTTPMessage(),
+            "https://storage.example/blob",
+        )
+        assert redirected is not None
+        assert redirected.get_header("Authorization") is None
+        return FakeResponse(b"ok")
+
+    monkeypatch.setattr(image.urllib.request, "urlopen", open_request)
+    monkeypatch.setattr(image, "_ssl_context", lambda: None)
+    with image._open("https://registry.example/blob", auth="Bearer dummy") as response:
+        assert response.read() == b"ok"
+
+
+def test_successful_refresh_retains_previous_catalogue_paths(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _fake_registry(
+        monkeypatch,
+        {
+            "sha256:base": _layer([]),
+            "sha256:assets": _layer([("epics/ibek-defs/a.ibek.support.yaml", b"old")]),
+        },
+    )
+    old = fetch_ibek_defs(IMAGE, log=lambda _: None)
+    _fake_registry(
+        monkeypatch,
+        {
+            "sha256:base": _layer([]),
+            "sha256:assets": _layer([("epics/ibek-defs/a.ibek.support.yaml", b"new")]),
+        },
+    )
+    original = image.Registry.manifest
+
+    def changed(self: image.Registry) -> tuple[str, dict[str, Any]]:
+        _, manifest = original(self)
+        return "sha256:new", manifest
+
+    monkeypatch.setattr(image.Registry, "manifest", changed)
+    new = fetch_ibek_defs(IMAGE, log=lambda _: None, refresh=True)
+    assert new != old
+    assert (old / "a.ibek.support.yaml").read_bytes() == b"old"
+    assert (new / "a.ibek.support.yaml").read_bytes() == b"new"
+    assert fetch_ibek_defs(IMAGE, log=lambda _: None) == new
+
+
+def test_deleted_cache_file_is_refetched(monkeypatch: pytest.MonkeyPatch):
+    calls = _fake_registry(
+        monkeypatch,
+        {
+            "sha256:base": _layer([]),
+            "sha256:assets": _layer([("epics/ibek-defs/a.ibek.support.yaml", b"data")]),
+        },
+    )
+    old = fetch_ibek_defs(IMAGE, log=lambda _: None)
+    (old / "a.ibek.support.yaml").unlink()
+    calls.clear()
+    new = fetch_ibek_defs(IMAGE, log=lambda _: None)
+    assert calls
+    assert (new / "a.ibek.support.yaml").read_bytes() == b"data"
