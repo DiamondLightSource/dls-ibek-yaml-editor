@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QModelIndex, QSize, Qt, QTimer
+from PySide6.QtCore import QEventLoop, QModelIndex, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -208,7 +208,9 @@ class MainWindow(QMainWindow):
 
     def _status(self, text: str) -> None:
         self.statusBar().showMessage(text)
-        # Loading is synchronous; avoid re-entrant file actions while it runs.
+        # Loading is synchronous: repaint so a slow fetch shows its progress,
+        # but take no clicks or keys, so no file action can re-enter it.
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
 
     def load(self, target: Path | None, *, reload_catalogue: bool = False) -> bool:
         """Open a service dir, config dir or ioc.yaml; reload entities if needed."""

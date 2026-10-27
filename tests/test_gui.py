@@ -555,3 +555,15 @@ def test_paste_into_irregular_selection_leaves_other_cells(
     assert [table.entity(i)["spare_no"] for i in range(3)] == [9, 2, 9]
     table.model.stack.undo()
     assert [table.entity(i)["spare_no"] for i in range(3)] == [1, 2, 3]
+
+
+def test_status_repaints_without_user_input(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+):
+    from PySide6.QtCore import QEventLoop
+
+    calls: list[object] = []
+    monkeypatch.setattr(QApplication, "processEvents", lambda *a: calls.append(a))
+    window._status("Fetching ibek definitions ...")  # pyright: ignore[reportPrivateUsage]
+    assert window.statusBar().currentMessage() == "Fetching ibek definitions ..."
+    assert calls == [(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents,)]
