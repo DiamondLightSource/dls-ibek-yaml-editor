@@ -241,22 +241,36 @@ class Registry:
         raise ImageError(f"{self.ref.image}: nested image index")
 
 
-def _read_meta(cache: Path) -> dict[str, Any] | None:
+def _read_meta(cache: Path, legacy: bool = False) -> dict[str, Any] | None:
+    """The metadata of a complete cache folder, or None.
+
+    ``legacy`` accepts the layout written before snapshots (0.1 dev builds):
+    the files directly in the image folder, no ``layout_version``, and the
+    file list also naming ``ioc.schema.json``. Those caches came from the
+    image's ``/assets`` layer alone, which holds every definition in
+    epics-containers runtime images, so they are kept rather than refetched;
+    that matters on workstations that can't reach the registry.
+    """
     try:
         meta = json.loads((cache / ".meta.json").read_text())
     except (OSError, ValueError):
         return None
-    if not isinstance(meta, dict) or meta.get("layout_version") != 2:
+    if not isinstance(meta, dict):
+        return None
+    if meta.get("layout_version") != (None if legacy else 2):
         return None
     files = meta.get("files")
     if not isinstance(files, list) or not files:
         return None
-    if not all(
-        isinstance(name, str)
-        and Path(name).name == name
-        and name.endswith(".ibek.support.yaml")
-        and (cache / name).is_file()
-        for name in files
+    names = [name for name in files if isinstance(name, str)]
+    support = [name for name in names if name.endswith(".ibek.support.yaml")]
+    if (
+        len(names) != len(files)
+        or not support
+        or (not legacy and len(support) != len(names))
+        or not all(
+            Path(name).name == name and (cache / name).is_file() for name in names
+        )
     ):
         return None
     return meta
@@ -283,6 +297,8 @@ def fetch_ibek_defs(
     except OSError:
         pass
     meta = _read_meta(cache)
+    if meta is None and cache == root:
+        meta = _read_meta(root, legacy=True)
     if meta is not None and not refresh and ref.tag != "latest":
         return cache
     registry = Registry(ref)

@@ -399,3 +399,50 @@ def test_deleted_cache_file_is_refetched(monkeypatch: pytest.MonkeyPatch):
     new = fetch_ibek_defs(IMAGE, log=lambda _: None)
     assert calls
     assert (new / "a.ibek.support.yaml").read_bytes() == b"data"
+
+
+def _legacy_cache(files: list[str]) -> Path:
+    """A cache folder as the editor wrote it before snapshots."""
+    cache = image._cache_dir(ImageRef.parse(IMAGE))  # pyright: ignore[reportPrivateUsage]
+    cache.mkdir(parents=True)
+    for name in files:
+        (cache / name).write_text("module: a\n")
+    meta = {"image": IMAGE, "digest": "sha256:old", "files": files}
+    (cache / ".meta.json").write_text(json.dumps(meta))
+    return cache
+
+
+def test_legacy_cache_is_used_without_the_registry(monkeypatch: pytest.MonkeyPatch):
+    cache = _legacy_cache(["a.ibek.support.yaml", "ioc.schema.json"])
+
+    def offline(self: Any, path: str, headers: Any = None) -> Any:
+        raise AssertionError("the registry must not be asked")
+
+    monkeypatch.setattr(image.Registry, "get", offline)
+    assert fetch_ibek_defs(IMAGE, log=lambda _: None) == cache
+
+
+def test_legacy_cache_is_the_offline_fallback_for_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cache = _legacy_cache(["a.ibek.support.yaml"])
+
+    def offline(self: Any, path: str, headers: Any = None) -> Any:
+        raise OSError("no network")
+
+    monkeypatch.setattr(image.Registry, "get", offline)
+    messages: list[str] = []
+    assert fetch_ibek_defs(IMAGE, log=messages.append, refresh=True) == cache
+    assert "cached" in messages[0]
+
+
+def test_incomplete_legacy_cache_is_ignored(monkeypatch: pytest.MonkeyPatch):
+    cache = _legacy_cache(["a.ibek.support.yaml"])
+    (cache / "a.ibek.support.yaml").unlink()
+
+    def offline(self: Any, path: str, headers: Any = None) -> Any:
+        raise OSError("no network")
+
+    monkeypatch.setattr(image.Registry, "get", offline)
+    with pytest.raises(image.ImageError):
+        fetch_ibek_defs(IMAGE, log=lambda _: None)

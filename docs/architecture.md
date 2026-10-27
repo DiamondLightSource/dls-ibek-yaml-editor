@@ -93,6 +93,13 @@ already open in another window or process still refer to valid paths. Metadata
 records the manifest digest, format version and support filenames; missing
 files invalidate a cache entry.
 
+A cache written before snapshots existed (files directly in the image folder,
+no format version) is still used, both as a cache hit and as the offline
+fallback for `--refresh`. Those caches were read from the `/assets` layer alone,
+which is where epics-containers runtime images keep every definition.
+Discarding them would make each cached image unusable on a workstation that
+can't reach the registry until it is fetched again elsewhere.
+
 ## Editing and undo
 
 ```mermaid
